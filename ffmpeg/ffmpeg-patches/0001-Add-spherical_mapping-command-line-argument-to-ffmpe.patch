@@ -1,0 +1,274 @@
+From 6c82c47c8e25dcfa7a3ce9d655411ad8d0afed5a Mon Sep 17 00:00:00 2001
+From: Aaron Colwell <acolwell@google.com>
+Date: Fri, 2 Jun 2017 16:11:21 -0700
+Subject: [PATCH] Add spherical_mapping command-line argument to ffmpeg.
+
+This allows adding AVSphericalMapping information to files
+that don't already have it.
+---
+ ffmpeg.c     |  12 ++++-
+ ffmpeg.h     |   6 +++
+ ffmpeg_opt.c | 160 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++-
+ 3 files changed, 176 insertions(+), 2 deletions(-)
+
+diff --git a/ffmpeg.c b/ffmpeg.c
+index 1d248bc..8c35090 100644
+--- a/ffmpeg.c
++++ b/ffmpeg.c
+@@ -3092,6 +3092,10 @@ static int init_output_stream_streamcopy(OutputStream *ost)
+             const AVPacketSideData *sd_src = &ist->st->side_data[i];
+             uint8_t *dst_data;
+ 
++            if ((sd_src->type == AV_PKT_DATA_SPHERICAL && ost->spherical_mapping_overridden) ||
++                (sd_src->type == AV_PKT_DATA_STEREO3D && ost->stereo3d_overridden))
++                continue;
++
+             dst_data = av_stream_new_side_data(ost->st, sd_src->type, sd_src->size);
+             if (!dst_data)
+                 return AVERROR(ENOMEM);
+@@ -3528,7 +3532,13 @@ static int init_output_stream(OutputStream *ost, char *error, int error_len)
+             int i;
+             for (i = 0; i < ist->st->nb_side_data; i++) {
+                 AVPacketSideData *sd = &ist->st->side_data[i];
+-                uint8_t *dst = av_stream_new_side_data(ost->st, sd->type, sd->size);
++                uint8_t *dst;
++
++                if ((sd->type == AV_PKT_DATA_SPHERICAL && ost->spherical_mapping_overridden) ||
++                    (sd->type == AV_PKT_DATA_STEREO3D && ost->stereo3d_overridden))
++                    continue;
++
++                dst = av_stream_new_side_data(ost->st, sd->type, sd->size);
+                 if (!dst)
+                     return AVERROR(ENOMEM);
+                 memcpy(dst, sd->data, sd->size);
+diff --git a/ffmpeg.h b/ffmpeg.h
+index d2deb43..58a3eb5 100644
+--- a/ffmpeg.h
++++ b/ffmpeg.h
+@@ -45,6 +45,8 @@
+ #include "libavutil/hwcontext.h"
+ #include "libavutil/pixfmt.h"
+ #include "libavutil/rational.h"
++#include "libavutil/spherical.h"
++#include "libavutil/stereo3d.h"
+ #include "libavutil/threadmessage.h"
+ 
+ #include "libswresample/swresample.h"
+@@ -237,6 +239,8 @@ typedef struct OptionsContext {
+     int        nb_time_bases;
+     SpecifierOpt *enc_time_bases;
+     int        nb_enc_time_bases;
++    SpecifierOpt *spherical_mappings;
++    int        nb_spherical_mappings;
+ } OptionsContext;
+ 
+ typedef struct InputFilter {
+@@ -487,6 +491,8 @@ typedef struct OutputStream {
+     int top_field_first;
+     int rotate_overridden;
+     double rotate_override_value;
++    int spherical_mapping_overridden;
++    int stereo3d_overridden;
+ 
+     AVRational frame_aspect_ratio;
+ 
+diff --git a/ffmpeg_opt.c b/ffmpeg_opt.c
+index 100fa76..4bc5104 100644
+--- a/ffmpeg_opt.c
++++ b/ffmpeg_opt.c
+@@ -40,6 +40,8 @@
+ #include "libavutil/parseutils.h"
+ #include "libavutil/pixdesc.h"
+ #include "libavutil/pixfmt.h"
++#include "libavutil/spherical.h"
++#include "libavutil/stereo3d.h"
+ 
+ #define DEFAULT_PASS_LOGFILENAME_PREFIX "ffmpeg2pass"
+ 
+@@ -1585,12 +1587,158 @@ static void check_streamcopy_filters(OptionsContext *o, AVFormatContext *oc,
+     }
+ }
+ 
++static int set_spherical_mapping(const char* opt, OutputStream *ost) {
++    typedef struct {
++        const AVClass* spherical_class;
++        int projection;
++
++        double yaw;
++        double pitch;
++        double roll;
++
++        int64_t bound_left;
++        int64_t bound_top;
++        int64_t bound_right;
++        int64_t bound_bottom;
++
++        int64_t padding;
++
++        int stereo_mode;
++    } SphericalMappingContext;
++
++#define OFFSET(x) offsetof(SphericalMappingContext, x)
++#define FLAGS AV_OPT_FLAG_VIDEO_PARAM
++
++    static const AVOption opts[] = {
++        { "projection", "projection", OFFSET(projection), AV_OPT_TYPE_INT,
++            { .i64 = -1 }, -1, AV_SPHERICAL_EQUIRECTANGULAR_TILE, FLAGS, "projection" },
++        { "equirectangular", "equirectangular projection", 0, AV_OPT_TYPE_CONST,
++            { .i64 = AV_SPHERICAL_EQUIRECTANGULAR }, INT_MIN, INT_MAX, FLAGS, "projection" },
++        { "cubemap", "cubemap projection", 0, AV_OPT_TYPE_CONST,
++            { .i64 = AV_SPHERICAL_CUBEMAP }, INT_MIN, INT_MAX, FLAGS, "projection" },
++        { "equirectangular_tile", "tiled equirectangular projection", 0, AV_OPT_TYPE_CONST,
++            { .i64 = AV_SPHERICAL_EQUIRECTANGULAR_TILE }, INT_MIN, INT_MAX, FLAGS, "projection" },
++        { "yaw", "initial yaw orientation in degrees", OFFSET(yaw), AV_OPT_TYPE_DOUBLE,
++            { .dbl = 0.0 }, -180.0, 180.0, FLAGS },
++        { "pitch", "initial pitch orientation in degrees", OFFSET(pitch), AV_OPT_TYPE_DOUBLE,
++            { .dbl = 0.0 }, -90.0, 90.0, FLAGS },
++        { "roll", "initial roll orientation in degrees", OFFSET(roll), AV_OPT_TYPE_DOUBLE,
++            { .dbl = 0.0 }, -180.0, 180.0, FLAGS },
++        { "bound_left", "tiled equirectangular left bound", OFFSET(bound_left), AV_OPT_TYPE_INT64,
++            { .i64 = 0 }, 0, UINT_MAX, FLAGS },
++        { "bound_top", "tiled equirectangular top bound", OFFSET(bound_top), AV_OPT_TYPE_INT64,
++            { .i64 = 0 }, 0, UINT_MAX, FLAGS },
++        { "bound_right", "tiled equirectangular right bound", OFFSET(bound_right), AV_OPT_TYPE_INT64,
++            { .i64 = 0 }, 0, UINT_MAX, FLAGS },
++        { "bound_bottom", "tiled equirectangular bottom bound", OFFSET(bound_bottom), AV_OPT_TYPE_INT64,
++            { .i64 = 0 }, 0, UINT_MAX, FLAGS },
++        { "padding", "cubemap padding in pixels", OFFSET(padding), AV_OPT_TYPE_INT64,
++            { .i64 = 0 }, 0, UINT_MAX, FLAGS },
++        { "stereo_mode", "stereo_mode", OFFSET(stereo_mode), AV_OPT_TYPE_INT,
++            { .i64 = -1 }, -1, AV_STEREO3D_TOPBOTTOM, FLAGS, "stereo_mode" },
++        { "top-bottom", "Top/Bottom stereo mode", 0, AV_OPT_TYPE_CONST,
++            { .i64 = AV_STEREO3D_TOPBOTTOM }, INT_MIN, INT_MAX, FLAGS, "stereo_mode" },
++        { "left-right", "Left/Right stereo mode", 0, AV_OPT_TYPE_CONST,
++            { .i64 = AV_STEREO3D_SIDEBYSIDE }, INT_MIN, INT_MAX, FLAGS, "stereo_mode" },
++        { NULL }
++    };
++#undef OFFSET
++#undef FLAGS
++
++    static const AVClass spherical_mapping_class = {
++        .class_name = "",
++        .item_name  = av_default_item_name,
++        .option     = opts,
++        .version    = LIBAVUTIL_VERSION_INT,
++    };
++
++    SphericalMappingContext ctx = {
++        .spherical_class = &spherical_mapping_class
++    };
++
++    AVStream* st = ost->st;
++    size_t spherical_mapping_size = 0;
++    AVSphericalMapping *spherical_mapping = NULL;
++    int ret;
++
++    if (!opt)
++        return AVERROR(EINVAL);
++
++    av_opt_set_defaults(&ctx);
++    ret = av_set_options_string(&ctx, opt, "=", ",");
++    if (ret < 0)
++        return ret;
++
++    if (ctx.projection == -1) {
++        av_log(NULL, AV_LOG_ERROR, "projection must be specified\n");
++        return AVERROR(EINVAL);
++    }
++
++    if (ctx.padding > 0 && ctx.projection != AV_SPHERICAL_CUBEMAP) {
++        av_log(NULL, AV_LOG_ERROR, "padding only allowed for AV_SPHERICAL_CUBEMAP projection.\n");
++        return AVERROR(EINVAL);
++    }
++
++    if ((ctx.bound_left > 0 || ctx.bound_top > 0 || ctx.bound_right > 0 ||
++         ctx.bound_bottom > 0) && ctx.projection != AV_SPHERICAL_EQUIRECTANGULAR_TILE) {
++        av_log(NULL, AV_LOG_ERROR, "bounds only allowed for AV_SPHERICAL_EQUIRECTANGULAR_TILE projection.\n");
++        return AVERROR(EINVAL);
++    }
++
++    spherical_mapping = av_spherical_alloc(&spherical_mapping_size);
++    if (!spherical_mapping)
++        return AVERROR(ENOMEM);
++
++    spherical_mapping->projection = (enum AVSphericalProjection)ctx.projection;
++    spherical_mapping->yaw = (int32_t)(ctx.yaw * (1 << 16));
++    spherical_mapping->pitch = (int32_t)(ctx.pitch * (1 << 16));
++    spherical_mapping->roll = (int32_t)(ctx.roll * (1 << 16));
++
++    if (ctx.projection == AV_SPHERICAL_CUBEMAP) {
++        spherical_mapping->padding = (uint32_t)ctx.padding;
++    } else if (ctx.projection == AV_SPHERICAL_EQUIRECTANGULAR_TILE) {
++        spherical_mapping->bound_left = (uint32_t)ctx.bound_left;
++        spherical_mapping->bound_top = (uint32_t)ctx.bound_top;
++        spherical_mapping->bound_right = (uint32_t)ctx.bound_right;
++        spherical_mapping->bound_bottom = (uint32_t)ctx.bound_bottom;
++    }
++
++    if (ret >= 0) {
++        ret = av_stream_add_side_data(st, AV_PKT_DATA_SPHERICAL, spherical_mapping, spherical_mapping_size);
++
++        if (ret < 0) {
++            av_freep(&spherical_mapping);
++        }
++
++        ost->spherical_mapping_overridden = 1;
++
++        if (ctx.stereo_mode != -1) {
++          AVStereo3D* stereo3d = av_stereo3d_alloc();
++
++          if (!stereo3d)
++            return AVERROR(ENOMEM);
++
++          stereo3d->type = (enum AVStereo3DType)(ctx.stereo_mode);
++          ret = av_stream_add_side_data(st, AV_PKT_DATA_STEREO3D, stereo3d, sizeof(*stereo3d));
++
++          if (ret < 0) {
++            av_freep(&stereo3d);
++            return ret;
++          }
++
++          ost->stereo3d_overridden = 1;
++        }
++    }
++
++    return ret;
++}
++
+ static OutputStream *new_video_stream(OptionsContext *o, AVFormatContext *oc, int source_index)
+ {
+     AVStream *st;
+     OutputStream *ost;
+     AVCodecContext *video_enc;
+-    char *frame_rate = NULL, *frame_aspect_ratio = NULL;
++    char *frame_rate = NULL, *frame_aspect_ratio = NULL, *spherical_mapping = NULL;
+ 
+     ost = new_output_stream(o, oc, AVMEDIA_TYPE_VIDEO, source_index);
+     st  = ost->st;
+@@ -1617,6 +1765,12 @@ static OutputStream *new_video_stream(OptionsContext *o, AVFormatContext *oc, in
+ 
+     MATCH_PER_STREAM_OPT(filter_scripts, str, ost->filters_script, oc, st);
+     MATCH_PER_STREAM_OPT(filters,        str, ost->filters,        oc, st);
++    MATCH_PER_STREAM_OPT(spherical_mappings, str, spherical_mapping, oc, st);
++
++    if (spherical_mapping && set_spherical_mapping(spherical_mapping, ost) < 0) {
++        av_log(NULL, AV_LOG_FATAL, "Invalid spherical_mapping: %s\n", spherical_mapping);
++        exit_program(1);
++    }
+ 
+     if (!ost->stream_copy) {
+         const char *p = NULL;
+@@ -3642,6 +3796,10 @@ const OptionDef options[] = {
+         "automatically insert correct rotate filters" },
+     { "hwaccel_lax_profile_check", OPT_BOOL | OPT_EXPERT,                        { &hwaccel_lax_profile_check},
+         "attempt to decode anyway if HW accelerated decoder's supported profiles do not exactly match the stream" },
++    { "spherical_mapping", OPT_VIDEO | HAS_ARG  | OPT_STRING | OPT_SPEC |
++                           OPT_OUTPUT,                                           { .off = OFFSET(spherical_mappings) },
++        "set spherical mapping for video stream", "spherical_mapping" },
++
+ 
+     /* audio options */
+     { "aframes",        OPT_AUDIO | HAS_ARG  | OPT_PERFILE | OPT_OUTPUT,           { .func_arg = opt_audio_frames },
+-- 
+2.7.4
+

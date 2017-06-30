@@ -1,0 +1,65 @@
+From 7f80bedef199ed3d7ad17b94067a837dcb58a28c Mon Sep 17 00:00:00 2001
+From: Aaron Colwell <acolwell@google.com>
+Date: Sat, 30 Sep 2017 14:35:48 -0700
+Subject: [PATCH] Add mesh support for matroska.
+
+---
+ libavformat/matroskadec.c | 20 +++++++++++++++++---
+ libavformat/matroskaenc.c |  6 ++++++
+ 2 files changed, 23 insertions(+), 3 deletions(-)
+
+diff --git a/libavformat/matroskadec.c b/libavformat/matroskadec.c
+index 94a56eb..a16bb92 100644
+--- a/libavformat/matroskadec.c
++++ b/libavformat/matroskadec.c
+@@ -1989,13 +1989,27 @@ static int mkv_parse_video_projection(AVStream *st, const MatroskaTrack *track)
+             return AVERROR_INVALIDDATA;
+         }
+         break;
++    case MATROSKA_VIDEO_PROJECTION_TYPE_MESH:
++        spherical_size = sizeof(AVSphericalMapping) + track->video.projection.private.size;
++        spherical = av_mallocz(spherical_size);
++        if (!spherical)
++            return AVERROR(ENOMEM);
++        projection = AV_SPHERICAL_MESH;
++        memcpy(spherical->mesh_data, track->video.projection.private.data,
++               track->video.projection.private.size);
++        spherical->mesh_size = track->video.projection.private.size;
++        break;
+     default:
++        av_log(NULL, AV_LOG_ERROR, "Unsupported projection type %"PRIu64"\n",
++               track->video.projection.type);
+         return 0;
+     }
+ 
+-    spherical = av_spherical_alloc(&spherical_size);
+-    if (!spherical)
+-        return AVERROR(ENOMEM);
++    if (!spherical) {
++        spherical = av_spherical_alloc(&spherical_size);
++        if (!spherical)
++            return AVERROR(ENOMEM);
++    }
+     spherical->projection = projection;
+ 
+     spherical->yaw   = (int32_t)(track->video.projection.yaw   * (1 << 16));
+diff --git a/libavformat/matroskaenc.c b/libavformat/matroskaenc.c
+index 17094f8..3c9e0c4 100644
+--- a/libavformat/matroskaenc.c
++++ b/libavformat/matroskaenc.c
+@@ -1004,6 +1004,12 @@ static int mkv_write_video_projection(AVFormatContext *s, AVIOContext *pb, AVStr
+             put_ebml_binary(dyn_cp, MATROSKA_ID_VIDEOPROJECTIONPRIVATE, private, sizeof(private));
+             break;
+         }
++        case AV_SPHERICAL_MESH:
++            put_ebml_uint(dyn_cp, MATROSKA_ID_VIDEOPROJECTIONTYPE,
++                          MATROSKA_VIDEO_PROJECTION_TYPE_MESH);
++            put_ebml_binary(dyn_cp, MATROSKA_ID_VIDEOPROJECTIONPRIVATE,
++                            spherical->mesh_data, spherical->mesh_size);
++            break;
+         default:
+             av_log(s, AV_LOG_WARNING, "Unknown projection type\n");
+             goto end;
+-- 
+2.7.4
+
