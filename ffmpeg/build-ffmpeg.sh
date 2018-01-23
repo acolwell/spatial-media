@@ -61,7 +61,7 @@ if [ ! -d $BUILD_TMP_DIR/libvpx-$VPX_VERS ]; then
 fi
 if [ ! -f $BUILD_DIR/lib/libvpx.a ]; then
     cd $BUILD_TMP_DIR/libvpx-$VPX_VERS
-    ./configure --prefix=$BUILD_DIR --enable-static
+    ./configure --prefix=$BUILD_DIR --enable-static --enable-pic
     make -j$PROCS
     make install
 fi
@@ -73,7 +73,7 @@ if [ ! -d $BUILD_TMP_DIR/x264-snapshot-$X264_VERS-stable ]; then
 fi
 if [ ! -f $BUILD_DIR/lib/libx264.a ]; then
     cd $BUILD_TMP_DIR/x264-snapshot-$X264_VERS-stable
-    ./configure --prefix=$BUILD_DIR --enable-static --disable-avs --disable-thread
+    ./configure --prefix=$BUILD_DIR --enable-static --enable-pic --disable-avs --disable-thread
     make -j$PROCS
     make install
 fi
@@ -122,14 +122,13 @@ if [ ! -d ffmpeg ]; then
     git checkout $FFMPEG_VERS
     # Create base branch used to format patches in ffmpeg-patches
     # (e.g. git format-patch base)
-    git checkout -b base 
+    git checkout -b base
     git checkout -b spatial-media
     git am ../ffmpeg-patches/*.patch
     cd $BASE_DIR
 fi
 cd ffmpeg
 ./configure --prefix=$BUILD_DIR --enable-static \
-  --disable-ffserver \
   --enable-libx264 --enable-libmp3lame --enable-libvpx --enable-libvorbis --enable-libopus \
   --enable-gpl --enable-nonfree \
   --enable-opengl \

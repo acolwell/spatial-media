@@ -1,4 +1,4 @@
-From 1293efd617d9442ed7425e01fcaa9e87605b6ebb Mon Sep 17 00:00:00 2001
+From 6cb680fe8dfe7ffe8fb76e57a9427dbaf1fe3b49 Mon Sep 17 00:00:00 2001
 From: Aaron Colwell <acolwell@google.com>
 Date: Sat, 30 Sep 2017 14:40:34 -0700
 Subject: [PATCH] movenc: Remove strictness check for spherical metadata.
@@ -8,10 +8,10 @@ Subject: [PATCH] movenc: Remove strictness check for spherical metadata.
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/libavformat/movenc.c b/libavformat/movenc.c
-index 7ade5b1..e4408dc 100644
+index 6875d6ea0d..df74d5f282 100644
 --- a/libavformat/movenc.c
 +++ b/libavformat/movenc.c
-@@ -1948,7 +1948,7 @@ static int mov_write_video_tag(AVIOContext *pb, MOVMuxContext *mov, MOVTrack *tr
+@@ -2023,7 +2023,7 @@ static int mov_write_video_tag(AVIOContext *pb, MOVMuxContext *mov, MOVTrack *tr
              av_log(mov->fc, AV_LOG_WARNING, "Not writing 'colr' atom. Format is not MOV or MP4.\n");
      }
  
