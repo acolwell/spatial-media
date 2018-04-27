@@ -1,19 +1,19 @@
-From 4fd233b7c2317853a4c5aacd43cdead24be264d1 Mon Sep 17 00:00:00 2001
+From bbc3149718bb8a9544c1cf64f8b82d73d31873eb Mon Sep 17 00:00:00 2001
 From: Aaron Colwell <acolwell@google.com>
 Date: Fri, 30 Jun 2017 15:02:22 -0700
 Subject: [PATCH] Add support for mshp projection box.
 
 ---
- fftools/ffmpeg_opt.c  | 50 ++++++++++++++++++++++++++++++++++++++++++++++++--
+ fftools/ffmpeg_opt.c  | 50 +++++++++++++++++++++++++++++++++++++++++--
  libavformat/dump.c    |  2 ++
- libavformat/mov.c     | 34 ++++++++++++++++++++++++++++++++--
- libavformat/movenc.c  |  9 ++++++++-
+ libavformat/mov.c     | 34 +++++++++++++++++++++++++++--
+ libavformat/movenc.c  |  9 +++++++-
  libavutil/spherical.c |  1 +
- libavutil/spherical.h | 21 +++++++++++++++++++++
+ libavutil/spherical.h | 21 ++++++++++++++++++
  6 files changed, 112 insertions(+), 5 deletions(-)
 
 diff --git a/fftools/ffmpeg_opt.c b/fftools/ffmpeg_opt.c
-index b1535c8ef8..6f83229223 100644
+index 4cd42e6805..cf32ce9c20 100644
 --- a/fftools/ffmpeg_opt.c
 +++ b/fftools/ffmpeg_opt.c
 @@ -1617,6 +1617,8 @@ static int set_spherical_mapping(const char* opt, OutputStream *ost) {
@@ -101,7 +101,7 @@ index b1535c8ef8..6f83229223 100644
          return AVERROR(ENOMEM);
  
 diff --git a/libavformat/dump.c b/libavformat/dump.c
-index ef143fd4e2..3077b85bb1 100644
+index 942e62a581..57e6eea6e9 100644
 --- a/libavformat/dump.c
 +++ b/libavformat/dump.c
 @@ -377,6 +377,8 @@ static void dump_spherical(void *ctx, AVCodecParameters *par, AVPacketSideData *
@@ -114,10 +114,10 @@ index ef143fd4e2..3077b85bb1 100644
  }
  
 diff --git a/libavformat/mov.c b/libavformat/mov.c
-index 22faecfc17..96613805ee 100644
+index 1340bf3913..d031feb229 100644
 --- a/libavformat/mov.c
 +++ b/libavformat/mov.c
-@@ -5337,7 +5337,7 @@ static int mov_read_sv3d(MOVContext *c, AVIOContext *pb, MOVAtom atom)
+@@ -5388,7 +5388,7 @@ static int mov_read_sv3d(MOVContext *c, AVIOContext *pb, MOVAtom atom)
  {
      AVStream *st;
      MOVStreamContext *sc;
@@ -126,7 +126,7 @@ index 22faecfc17..96613805ee 100644
      int32_t yaw, pitch, roll;
      uint32_t l = 0, t = 0, r = 0, b = 0;
      uint32_t tag, padding = 0;
-@@ -5369,7 +5369,7 @@ static int mov_read_sv3d(MOVContext *c, AVIOContext *pb, MOVAtom atom)
+@@ -5420,7 +5420,7 @@ static int mov_read_sv3d(MOVContext *c, AVIOContext *pb, MOVAtom atom)
                 version);
          return 0;
      }
@@ -135,7 +135,7 @@ index 22faecfc17..96613805ee 100644
      avio_skip(pb, size - 12); /* metadata_source */
  
      size = avio_rb32(pb);
-@@ -5445,6 +5445,9 @@ static int mov_read_sv3d(MOVContext *c, AVIOContext *pb, MOVAtom atom)
+@@ -5496,6 +5496,9 @@ static int mov_read_sv3d(MOVContext *c, AVIOContext *pb, MOVAtom atom)
          else
              projection = AV_SPHERICAL_EQUIRECTANGULAR;
          break;
@@ -143,9 +143,9 @@ index 22faecfc17..96613805ee 100644
 +        projection = AV_SPHERICAL_MESH;
 +        break;
      default:
-         av_log(c->fc, AV_LOG_ERROR, "Unknown projection type\n");
+         av_log(c->fc, AV_LOG_ERROR, "Unknown projection type: %s\n", av_fourcc2str(tag));
          return 0;
-@@ -5467,6 +5470,33 @@ static int mov_read_sv3d(MOVContext *c, AVIOContext *pb, MOVAtom atom)
+@@ -5518,6 +5521,33 @@ static int mov_read_sv3d(MOVContext *c, AVIOContext *pb, MOVAtom atom)
      sc->spherical->bound_right  = r;
      sc->spherical->bound_bottom = b;
  
@@ -180,10 +180,10 @@ index 22faecfc17..96613805ee 100644
  }
  
 diff --git a/libavformat/movenc.c b/libavformat/movenc.c
-index a597b0853d..6875d6ea0d 100644
+index 0b44fd66ea..6206e14135 100644
 --- a/libavformat/movenc.c
 +++ b/libavformat/movenc.c
-@@ -1659,7 +1659,8 @@ static int mov_write_sv3d_tag(AVFormatContext *s, AVIOContext *pb, AVSphericalMa
+@@ -1666,7 +1666,8 @@ static int mov_write_sv3d_tag(AVFormatContext *s, AVIOContext *pb, AVSphericalMa
  
      if (spherical_mapping->projection != AV_SPHERICAL_EQUIRECTANGULAR &&
          spherical_mapping->projection != AV_SPHERICAL_EQUIRECTANGULAR_TILE &&
@@ -193,7 +193,7 @@ index a597b0853d..6875d6ea0d 100644
          av_log(pb, AV_LOG_WARNING, "Unsupported projection %d. sv3d not written.\n", spherical_mapping->projection);
          return 0;
      }
-@@ -1704,6 +1705,12 @@ static int mov_write_sv3d_tag(AVFormatContext *s, AVIOContext *pb, AVSphericalMa
+@@ -1711,6 +1712,12 @@ static int mov_write_sv3d_tag(AVFormatContext *s, AVIOContext *pb, AVSphericalMa
          avio_wb32(pb, 0); /* layout */
          avio_wb32(pb, spherical_mapping->padding); /* padding */
          break;
