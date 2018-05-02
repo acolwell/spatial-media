@@ -1,0 +1,1028 @@
+From 4300a3d6f9f385550657718ddd87a2092d1c2581 Mon Sep 17 00:00:00 2001
+From: Aaron Colwell <acolwell@google.com>
+Date: Mon, 30 Apr 2018 08:34:45 -0700
+Subject: [PATCH] Add support for spherical mesh rendering.
+
+---
+ libavdevice/opengl_enc.c         | 227 ++++++++++++--
+ libavdevice/opengl_enc_shaders.h |   4 +-
+ libavformat/Makefile             |   1 +
+ libavformat/spherical.c          | 516 +++++++++++++++++++++++++++++++
+ libavformat/spherical.h          |  71 +++++
+ 5 files changed, 794 insertions(+), 25 deletions(-)
+ create mode 100644 libavformat/spherical.c
+ create mode 100644 libavformat/spherical.h
+
+diff --git a/libavdevice/opengl_enc.c b/libavdevice/opengl_enc.c
+index 54c7e610bd..92aa0615b3 100644
+--- a/libavdevice/opengl_enc.c
++++ b/libavdevice/opengl_enc.c
+@@ -22,6 +22,7 @@
+ //TODO: support for more systems.
+ //TODO: implement X11, Windows, Mac OS native default window. SDL 1.2 doesn't allow to render to custom thread.
+ 
++#include <math.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+@@ -56,8 +57,11 @@
+ #include "libavutil/opt.h"
+ #include "libavutil/avassert.h"
+ #include "libavutil/avstring.h"
++#include "libavutil/spherical.h"
++#include "libavutil/stereo3d.h"
+ #include "libavformat/avformat.h"
+ #include "libavformat/internal.h"
++#include "libavformat/spherical.h"
+ #include "libavdevice/avdevice.h"
+ #include "opengl_enc_shaders.h"
+ 
+@@ -106,6 +110,7 @@ typedef void   (APIENTRY *FF_PFNGLVERTEXATTRIBPOINTERPROC) (GLuint index, GLint
+ typedef GLint  (APIENTRY *FF_PFNGLGETUNIFORMLOCATIONPROC) (GLuint program, const char *name);
+ typedef void   (APIENTRY *FF_PFNGLUNIFORM1FPROC) (GLint location, GLfloat v0);
+ typedef void   (APIENTRY *FF_PFNGLUNIFORM1IPROC) (GLint location, GLint v0);
++typedef void   (APIENTRY *FF_PFNGLUNIFORM2FVPROC) (GLint location, GLsizei count, const GLfloat* v0);
+ typedef void   (APIENTRY *FF_PFNGLUNIFORMMATRIX4FVPROC) (GLint location, GLsizei count, GLboolean transpose, const GLfloat *value);
+ typedef GLuint (APIENTRY *FF_PFNGLCREATEPROGRAMPROC) (void);
+ typedef void   (APIENTRY *FF_PFNGLDELETEPROGRAMPROC) (GLuint program);
+@@ -133,6 +138,7 @@ typedef struct FFOpenGLFunctions {
+     FF_PFNGLGETUNIFORMLOCATIONPROC glGetUniformLocation;           //Require GL_ARB_shader_objects
+     FF_PFNGLUNIFORM1FPROC glUniform1f;                             //Require GL_ARB_shader_objects
+     FF_PFNGLUNIFORM1IPROC glUniform1i;                             //Require GL_ARB_shader_objects
++    FF_PFNGLUNIFORM2FVPROC glUniform2fv;                           //Require GL_ARB_shader_objects
+     FF_PFNGLUNIFORMMATRIX4FVPROC glUniformMatrix4fv;               //Require GL_ARB_shader_objects
+     FF_PFNGLCREATEPROGRAMPROC glCreateProgram;                     //Require GL_ARB_shader_objects
+     FF_PFNGLDELETEPROGRAMPROC glDeleteProgram;                     //Require GL_ARB_shader_objects
+@@ -200,8 +206,17 @@ typedef struct OpenGLContext {
+     GLuint index_buffer;               ///< Index buffer
+     GLuint vertex_buffer;              ///< Vertex buffer
+     OpenGLVertexInfo vertex[4];        ///< VBO
++    enum AVStereo3DType mesh_stereo_mode;
++    AVSphericalMesh* mesh;
++    float mesh_yaw_rad;
++    float mesh_pitch_rad;
++    float mesh_roll_rad;
++    GLuint* mesh_index_buffers;
++
+     GLint projection_matrix_location;  ///< Uniforms' locations
+     GLint model_view_matrix_location;
++    GLint texture_scale_location;
++    GLint texture_offset_location;
+     GLint color_map_location;
+     GLint chroma_div_w_location;
+     GLint chroma_div_h_location;
+@@ -302,9 +317,14 @@ static av_cold void opengl_deinit_context(OpenGLContext *opengl)
+         opengl->glprocs.glBindBuffer(FF_GL_ELEMENT_ARRAY_BUFFER, 0);
+     }
+     if (opengl->glprocs.glDeleteBuffers) {
++        if (opengl->mesh && opengl->mesh_index_buffers) {
++            opengl->glprocs.glDeleteBuffers(opengl->mesh->num_vertex_lists, opengl->mesh_index_buffers);
++            av_freep(&opengl->mesh_index_buffers);
++        }
+         opengl->glprocs.glDeleteBuffers(2, &opengl->index_buffer);
+         opengl->vertex_buffer = opengl->index_buffer = 0;
+     }
++    av_spherical_mesh_freep(&opengl->mesh);
+ }
+ 
+ static int opengl_resize(AVFormatContext *h, int width, int height)
+@@ -346,6 +366,7 @@ static int opengl_control_message(AVFormatContext *h, int type, void *data, size
+ #if CONFIG_SDL2
+ static int opengl_sdl_process_events(AVFormatContext *h)
+ {
++    const float rotation_increment = M_PI / 180.0f;
+     OpenGLContext *opengl = h->priv_data;
+     AVDeviceRect message;
+     SDL_Event event;
+@@ -359,6 +380,24 @@ static int opengl_sdl_process_events(AVFormatContext *h)
+             case SDLK_ESCAPE:
+             case SDLK_q:
+                 return AVERROR(EIO);
++            case SDLK_DOWN:
++                opengl->mesh_pitch_rad += rotation_increment;
++                break;
++            case SDLK_UP:
++                opengl->mesh_pitch_rad -= rotation_increment;
++                break;
++            case SDLK_LEFT:
++                opengl->mesh_yaw_rad -= rotation_increment;
++                break;
++            case SDLK_RIGHT:
++                opengl->mesh_yaw_rad += rotation_increment;
++                break;
++            case SDLK_z:
++                opengl->mesh_roll_rad += rotation_increment;
++                break;
++            case SDLK_x:
++                opengl->mesh_roll_rad -= rotation_increment;
++                break;
+             }
+             return 0;
+         case SDL_WINDOWEVENT:
+@@ -427,6 +466,7 @@ static int av_cold opengl_sdl_load_procedures(OpenGLContext *opengl)
+     LOAD_OPENGL_FUN(glGetUniformLocation, FF_PFNGLGETUNIFORMLOCATIONPROC)
+     LOAD_OPENGL_FUN(glUniform1f, FF_PFNGLUNIFORM1FPROC)
+     LOAD_OPENGL_FUN(glUniform1i, FF_PFNGLUNIFORM1IPROC)
++    LOAD_OPENGL_FUN(glUniform2fv, FF_PFNGLUNIFORM2FVPROC)
+     LOAD_OPENGL_FUN(glUniformMatrix4fv, FF_PFNGLUNIFORMMATRIX4FVPROC)
+     LOAD_OPENGL_FUN(glCreateProgram, FF_PFNGLCREATEPROGRAMPROC)
+     LOAD_OPENGL_FUN(glDeleteProgram, FF_PFNGLDELETEPROGRAMPROC)
+@@ -469,6 +509,7 @@ static int av_cold opengl_load_procedures(OpenGLContext *opengl)
+     procs->glGetUniformLocation = glGetUniformLocation;
+     procs->glUniform1f = glUniform1f;
+     procs->glUniform1i = glUniform1i;
++    procs->glUniform2fv = glUniform2fv;
+     procs->glUniformMatrix4fv = glUniformMatrix4fv;
+     procs->glCreateProgram = glCreateProgram;
+     procs->glDeleteProgram = glDeleteProgram;
+@@ -519,6 +560,7 @@ static int av_cold opengl_load_procedures(OpenGLContext *opengl)
+     LOAD_OPENGL_FUN(glGetUniformLocation, FF_PFNGLGETUNIFORMLOCATIONPROC)
+     LOAD_OPENGL_FUN(glUniform1f, FF_PFNGLUNIFORM1FPROC)
+     LOAD_OPENGL_FUN(glUniform1i, FF_PFNGLUNIFORM1IPROC)
++    LOAD_OPENGL_FUN(glUniform2fv, FF_PFNGLUNIFORM2FVPROC)
+     LOAD_OPENGL_FUN(glUniformMatrix4fv, FF_PFNGLUNIFORMMATRIX4FVPROC)
+     LOAD_OPENGL_FUN(glCreateProgram, FF_PFNGLCREATEPROGRAMPROC)
+     LOAD_OPENGL_FUN(glDeleteProgram, FF_PFNGLDELETEPROGRAMPROC)
+@@ -549,6 +591,25 @@ static void opengl_make_identity(float matrix[16])
+     matrix[0] = matrix[5] = matrix[10] = matrix[15] = 1.0f;
+ }
+ 
++// Create rotation matrix that applies yaw, then pitch, then roll.
++static void opengl_make_rotation(float matrix[16], float yaw_rad, float pitch_rad, float roll_rad)
++{
++    const float A = pitch_rad;
++    const float B = yaw_rad;
++    const float C = roll_rad;
++    memset(matrix, 0, 16 * sizeof(float));
++    matrix[0 * 4 + 0] = cos(C)*cos(B) - sin(C) * sin(A) * sin(B);
++    matrix[0 * 4 + 1] = -sin(C) * cos(A);
++    matrix[0 * 4 + 2] = cos(C) * sin(B) + sin(C) * sin(A) * cos(B);
++    matrix[1 * 4 + 0] = sin(C) * cos(B) + cos(C) * sin(A) * sin(B);
++    matrix[1 * 4 + 1] = cos(C) * cos(A);
++    matrix[1 * 4 + 2] = sin(C) * sin(B) - cos(C) * sin(A) * cos(B);
++    matrix[2 * 4 + 0] = -cos(A) * sin(B);
++    matrix[2 * 4 + 1] = sin(A);
++    matrix[2 * 4 + 2] = cos(A) * cos(B);
++    matrix[3 * 4 + 3] = 1.0f;
++}
++
+ static void opengl_make_ortho(float matrix[16], float left, float right,
+                               float bottom, float top, float nearZ, float farZ)
+ {
+@@ -569,6 +630,18 @@ static void opengl_make_ortho(float matrix[16], float left, float right,
+     matrix[15] = 1.0f;
+ }
+ 
++static void opengl_make_perspective(float matrix[16], float fov, float aspect, float nearZ, float farZ)
++{
++    float tan_half_fov = tan(0.5 * fov * M_PI / 180);
++    memset(matrix, 0, 16 * sizeof(float));
++    matrix[0 * 4 + 0] = 1.0f / (aspect * tan_half_fov);
++    matrix[1 * 4 + 1] = 1.0f / tan_half_fov;
++    matrix[2 * 4 + 2] = -(farZ + nearZ) / (farZ - nearZ);
++
++    matrix[2 * 4 + 3] = -1;
++    matrix[3 * 4 + 2] = -(2.0f * farZ * nearZ) / (farZ - nearZ);
++}
++
+ static av_cold int opengl_read_limits(OpenGLContext *opengl)
+ {
+     static const struct{
+@@ -685,6 +758,33 @@ static void opengl_compute_display_area(AVFormatContext *s)
+     }
+ }
+ 
++static int opengl_handle_spherical_mapping(AVFormatContext *ctx) {
++  OpenGLContext *opengl = ctx->priv_data;
++  AVStream *st = ctx->streams[0];
++  AVStereo3D* stereo3d =
++      (AVStereo3D*)av_stream_get_side_data(st, AV_PKT_DATA_STEREO3D, NULL);
++  AVSphericalMapping* spherical =
++      (AVSphericalMapping*)av_stream_get_side_data(st, AV_PKT_DATA_SPHERICAL, NULL);
++
++  if (!spherical) return 0;
++
++  opengl->mesh_stereo_mode = AV_STEREO3D_2D;
++  opengl->mesh_yaw_rad = 0.0f;
++  opengl->mesh_pitch_rad = 0.0f;
++  opengl->mesh_roll_rad = 0.0f;
++  if (stereo3d) {
++    if (((stereo3d->flags & AV_STEREO3D_FLAG_INVERT)!= 0) ||
++        ((stereo3d->type != AV_STEREO3D_TOPBOTTOM) &&
++         (stereo3d->type != AV_STEREO3D_SIDEBYSIDE))) {
++      av_log(ctx, AV_LOG_WARNING, "Unsupported stereo mode.\n");
++      return AVERROR_INVALIDDATA;
++    }
++    opengl->mesh_stereo_mode = stereo3d->type;
++  }
++
++  return av_spherical_mapping_to_mesh(spherical, &opengl->mesh);
++}
++
+ static av_cold void opengl_get_texture_size(OpenGLContext *opengl, int in_width, int in_height,
+                                             int *out_width, int *out_height)
+ {
+@@ -817,6 +917,8 @@ static av_cold int opengl_compile_shaders(OpenGLContext *opengl, enum AVPixelFor
+     opengl->texture_coords_attrib = opengl->glprocs.glGetAttribLocation(opengl->program, "a_textureCoords");
+     opengl->projection_matrix_location = opengl->glprocs.glGetUniformLocation(opengl->program, "u_projectionMatrix");
+     opengl->model_view_matrix_location = opengl->glprocs.glGetUniformLocation(opengl->program, "u_modelViewMatrix");
++    opengl->texture_scale_location = opengl->glprocs.glGetUniformLocation(opengl->program, "u_textureScale");
++    opengl->texture_offset_location = opengl->glprocs.glGetUniformLocation(opengl->program, "u_textureOffset");
+     opengl->color_map_location = opengl->glprocs.glGetUniformLocation(opengl->program, "u_colorMap");
+     opengl->texture_location[0] = opengl->glprocs.glGetUniformLocation(opengl->program, "u_texture0");
+     opengl->texture_location[1] = opengl->glprocs.glGetUniformLocation(opengl->program, "u_texture1");
+@@ -866,33 +968,66 @@ static av_cold int opengl_prepare_vertex(AVFormatContext *s)
+         av_log(opengl, AV_LOG_WARNING, "Too big viewport requested, limited to %dx%d", opengl->window_width, opengl->window_height);
+     }
+     glViewport(0, 0, opengl->window_width, opengl->window_height);
+-    opengl_make_ortho(opengl->projection_matrix,
+-                      - (float)opengl->window_width  / 2.0f, (float)opengl->window_width  / 2.0f,
+-                      - (float)opengl->window_height / 2.0f, (float)opengl->window_height / 2.0f,
+-                      1.0f, -1.0f);
+-    opengl_make_identity(opengl->model_view_matrix);
+ 
+-    opengl_compute_display_area(s);
+-
+-    opengl->vertex[0].z = opengl->vertex[1].z = opengl->vertex[2].z = opengl->vertex[3].z = 0.0f;
+-    opengl->vertex[0].x = opengl->vertex[1].x = - (float)opengl->picture_width / 2.0f;
+-    opengl->vertex[2].x = opengl->vertex[3].x =   (float)opengl->picture_width / 2.0f;
+-    opengl->vertex[1].y = opengl->vertex[2].y = - (float)opengl->picture_height / 2.0f;
+-    opengl->vertex[0].y = opengl->vertex[3].y =   (float)opengl->picture_height / 2.0f;
++    opengl_handle_spherical_mapping(s);
+ 
+-    opengl_get_texture_size(opengl, opengl->width, opengl->height, &tex_w, &tex_h);
++    if (opengl->mesh) {
++      float fov = 90;
++      float aspect = (float)opengl->window_width / opengl->window_height;
++      opengl_make_perspective(opengl->projection_matrix, fov, aspect, 0.01f, 100.0f);
++    } else {
++      opengl_make_ortho(opengl->projection_matrix,
++                        - (float)opengl->window_width  / 2.0f, (float)opengl->window_width  / 2.0f,
++                        - (float)opengl->window_height / 2.0f, (float)opengl->window_height / 2.0f,
++                        1.0f, -1.0f);
++    }
++    opengl_make_identity(opengl->model_view_matrix);
+ 
+-    opengl->vertex[0].s0 = 0.0f;
+-    opengl->vertex[0].t0 = 0.0f;
+-    opengl->vertex[1].s0 = 0.0f;
+-    opengl->vertex[1].t0 = (float)opengl->height / (float)tex_h;
+-    opengl->vertex[2].s0 = (float)opengl->width  / (float)tex_w;
+-    opengl->vertex[2].t0 = (float)opengl->height / (float)tex_h;
+-    opengl->vertex[3].s0 = (float)opengl->width  / (float)tex_w;
+-    opengl->vertex[3].t0 = 0.0f;
++    opengl_compute_display_area(s);
+ 
+     opengl->glprocs.glBindBuffer(FF_GL_ARRAY_BUFFER, opengl->vertex_buffer);
+-    opengl->glprocs.glBufferData(FF_GL_ARRAY_BUFFER, sizeof(opengl->vertex), opengl->vertex, FF_GL_STATIC_DRAW);
++    if (opengl->mesh) {
++        uint32_t vertex_list_index;
++        opengl->glprocs.glBufferData(FF_GL_ARRAY_BUFFER,
++                                     sizeof(opengl->mesh->vertices[0]) * opengl->mesh->num_vertices,
++                                     opengl->mesh->vertices,
++                                     FF_GL_STATIC_DRAW);
++
++        opengl->mesh_index_buffers = av_mallocz(sizeof(GLuint) * opengl->mesh->num_vertex_lists);
++        if (!opengl->mesh_index_buffers) {
++            return AVERROR(ENOMEM);
++        }
++        opengl->glprocs.glGenBuffers(opengl->mesh->num_vertex_lists, opengl->mesh_index_buffers);
++
++        for (vertex_list_index = 0; vertex_list_index < opengl->mesh->num_vertex_lists; ++vertex_list_index) {
++            AVSphericalVertexList* vertex_list = &opengl->mesh->vertex_lists[vertex_list_index];
++            opengl->glprocs.glBindBuffer(FF_GL_ELEMENT_ARRAY_BUFFER, opengl->mesh_index_buffers[vertex_list_index]);
++            opengl->glprocs.glBufferData(FF_GL_ELEMENT_ARRAY_BUFFER,
++                                         sizeof(vertex_list->indices[0]) * vertex_list->num_indices,
++                                         vertex_list->indices,
++                                         FF_GL_STATIC_DRAW);
++        }
++        opengl->glprocs.glBindBuffer(FF_GL_ELEMENT_ARRAY_BUFFER, 0);
++    } else {
++      opengl->vertex[0].z = opengl->vertex[1].z = opengl->vertex[2].z = opengl->vertex[3].z = 0.0f;
++      opengl->vertex[0].x = opengl->vertex[1].x = - (float)opengl->picture_width / 2.0f;
++      opengl->vertex[2].x = opengl->vertex[3].x =   (float)opengl->picture_width / 2.0f;
++      opengl->vertex[1].y = opengl->vertex[2].y = - (float)opengl->picture_height / 2.0f;
++      opengl->vertex[0].y = opengl->vertex[3].y =   (float)opengl->picture_height / 2.0f;
++
++      opengl_get_texture_size(opengl, opengl->width, opengl->height, &tex_w, &tex_h);
++
++      opengl->vertex[0].s0 = 0.0f;
++      opengl->vertex[0].t0 = 0.0f;
++      opengl->vertex[1].s0 = 0.0f;
++      opengl->vertex[1].t0 = (float)opengl->height / (float)tex_h;
++      opengl->vertex[2].s0 = (float)opengl->width  / (float)tex_w;
++      opengl->vertex[2].t0 = (float)opengl->height / (float)tex_h;
++      opengl->vertex[3].s0 = (float)opengl->width  / (float)tex_w;
++      opengl->vertex[3].t0 = 0.0f;
++
++      opengl->glprocs.glBufferData(FF_GL_ARRAY_BUFFER, sizeof(opengl->vertex), opengl->vertex, FF_GL_STATIC_DRAW);
++    }
+     opengl->glprocs.glBindBuffer(FF_GL_ARRAY_BUFFER, 0);
+     OPENGL_ERROR_CHECK(opengl);
+     return 0;
+@@ -903,9 +1038,32 @@ static av_cold int opengl_prepare_vertex(AVFormatContext *s)
+ static int opengl_prepare(OpenGLContext *opengl)
+ {
+     int i;
++    float texture_scale[2] = {1.0f, 1.0f};
++    float texture_offset[2] = {0.0f, 0.0f};
++
++    if (opengl->mesh) {
++      opengl_make_rotation(opengl->model_view_matrix, opengl->mesh_yaw_rad, opengl->mesh_pitch_rad, opengl->mesh_roll_rad);
++    }
++
+     opengl->glprocs.glUseProgram(opengl->program);
+     opengl->glprocs.glUniformMatrix4fv(opengl->projection_matrix_location, 1, GL_FALSE, opengl->projection_matrix);
+     opengl->glprocs.glUniformMatrix4fv(opengl->model_view_matrix_location, 1, GL_FALSE, opengl->model_view_matrix);
++
++    if (opengl->mesh) {
++      if (opengl->mesh_stereo_mode == AV_STEREO3D_SIDEBYSIDE) {
++        texture_scale[0] = 0.5f;
++        texture_scale[1] = -1.0f;
++        texture_offset[0] = 0.0f;
++        texture_offset[1] = 1.0f;
++      } else if (opengl->mesh_stereo_mode == AV_STEREO3D_TOPBOTTOM) {
++        texture_scale[0] = 1.0f;
++        texture_scale[1] = -0.5f;
++        texture_offset[0] = 0.0f;
++        texture_offset[1] = 1.0f;
++      }
++    }
++    opengl->glprocs.glUniform2fv(opengl->texture_scale_location, 1, texture_scale);
++    opengl->glprocs.glUniform2fv(opengl->texture_offset_location, 1, texture_offset);
+     for (i = 0; i < 4; i++)
+         if (opengl->texture_location[i] != -1) {
+             opengl->glprocs.glActiveTexture(GL_TEXTURE0 + i);
+@@ -1224,13 +1382,34 @@ static int opengl_draw(AVFormatContext *h, void *input, int repaint, int is_pkt)
+         goto fail;
+ 
+     opengl->glprocs.glBindBuffer(FF_GL_ARRAY_BUFFER, opengl->vertex_buffer);
+-    opengl->glprocs.glBindBuffer(FF_GL_ELEMENT_ARRAY_BUFFER, opengl->index_buffer);
+     opengl->glprocs.glVertexAttribPointer(opengl->position_attrib, 3, GL_FLOAT, GL_FALSE, sizeof(OpenGLVertexInfo), 0);
+     opengl->glprocs.glEnableVertexAttribArray(opengl->position_attrib);
+     opengl->glprocs.glVertexAttribPointer(opengl->texture_coords_attrib, 2, GL_FLOAT, GL_FALSE, sizeof(OpenGLVertexInfo), 12);
+     opengl->glprocs.glEnableVertexAttribArray(opengl->texture_coords_attrib);
+ 
+-    glDrawElements(GL_TRIANGLES, FF_ARRAY_ELEMS(g_index), GL_UNSIGNED_SHORT, 0);
++    if (opengl->mesh) {
++        uint32_t vertex_list_index;
++        for (vertex_list_index = 0; vertex_list_index < opengl->mesh->num_vertex_lists; ++vertex_list_index) {
++            const AVSphericalVertexList* vertex_list = &opengl->mesh->vertex_lists[vertex_list_index];
++            GLuint type = GL_TRIANGLES;
++            switch(vertex_list->type) {
++                case AV_VERTEXLIST_TRIANGLES:
++                    type = GL_TRIANGLES;
++                    break;
++                case AV_VERTEXLIST_TRIANGLE_STRIP:
++                    type = GL_TRIANGLE_STRIP;
++                    break;
++                case AV_VERTEXLIST_TRIANGLE_FAN:
++                    type = GL_TRIANGLE_FAN;
++                    break;
++            }
++            opengl->glprocs.glBindBuffer(FF_GL_ELEMENT_ARRAY_BUFFER, opengl->mesh_index_buffers[vertex_list_index]);
++            glDrawElements(type, vertex_list->num_indices, GL_UNSIGNED_INT, 0);
++        }
++    } else {
++        opengl->glprocs.glBindBuffer(FF_GL_ELEMENT_ARRAY_BUFFER, opengl->index_buffer);
++        glDrawElements(GL_TRIANGLES, FF_ARRAY_ELEMS(g_index), GL_UNSIGNED_SHORT, 0);
++    }
+ 
+     ret = AVERROR_EXTERNAL;
+     OPENGL_ERROR_CHECK(opengl);
+diff --git a/libavdevice/opengl_enc_shaders.h b/libavdevice/opengl_enc_shaders.h
+index 67ee0ae7b4..4305a981a0 100644
+--- a/libavdevice/opengl_enc_shaders.h
++++ b/libavdevice/opengl_enc_shaders.h
+@@ -26,6 +26,8 @@
+ static const char * const FF_OPENGL_VERTEX_SHADER =
+     "uniform mat4 u_projectionMatrix;"
+     "uniform mat4 u_modelViewMatrix;"
++    "uniform vec2 u_textureScale;"
++    "uniform vec2 u_textureOffset;"
+ 
+     "attribute vec4 a_position;"
+     "attribute vec2 a_textureCoords;"
+@@ -35,7 +37,7 @@ static const char * const FF_OPENGL_VERTEX_SHADER =
+     "void main()"
+     "{"
+         "gl_Position = u_projectionMatrix * (a_position * u_modelViewMatrix);"
+-        "texture_coordinate = a_textureCoords;"
++        "texture_coordinate = a_textureCoords * u_textureScale + u_textureOffset;"
+     "}";
+ 
+ /**
+diff --git a/libavformat/Makefile b/libavformat/Makefile
+index 3eeca5091d..fb896c25ee 100644
+--- a/libavformat/Makefile
++++ b/libavformat/Makefile
+@@ -21,6 +21,7 @@ OBJS = allformats.o         \
+        protocols.o          \
+        riff.o               \
+        sdp.o                \
++       spherical.o          \
+        url.o                \
+        utils.o              \
+ 
+diff --git a/libavformat/spherical.c b/libavformat/spherical.c
+new file mode 100644
+index 0000000000..71c222c2f4
+--- /dev/null
++++ b/libavformat/spherical.c
+@@ -0,0 +1,516 @@
++/*
++ * Copyright (c) 2018 Aaron Colwell <acolwell@google.com>
++ *
++ * This file is part of FFmpeg.
++ *
++ * FFmpeg is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * FFmpeg is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with FFmpeg; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
++ */
++
++#include <stdio.h>
++
++#include "config.h"
++
++#if CONFIG_ZLIB
++#include <zlib.h>
++#endif /* CONFIG_ZLIB */
++
++#include "libavcodec/get_bits.h"
++#include "libavformat/avformat.h"
++#include "libavformat/avio_internal.h"
++#include "libavformat/spherical.h"
++#include "libavutil/mem.h"
++#include "libavutil/spherical.h"
++
++static int32_t unzigzag(uint32_t val)
++{
++    if (val & 1)
++        return -((val + 1) >> 1);
++    return val >> 1;
++}
++
++static int parse_mesh_box(const uint8_t* data, int size, AVSphericalMesh** mesh_out)
++{
++    GetBitContext gb;
++    int ret = init_get_bits8(&gb, data, size);
++    uint32_t coordinate_count = get_bits_long(&gb, 32);
++    float* coordinates;
++    uint32_t vertex_count;
++    int ccsb, vcsb;
++    uint32_t vertex_list_count;
++
++    AVSphericalMesh* mesh = NULL;
++    static const size_t field_offsets[5] = {
++        offsetof(AVSphericalMeshVertex, x) / sizeof(float),
++        offsetof(AVSphericalMeshVertex, y) / sizeof(float),
++        offsetof(AVSphericalMeshVertex, z) / sizeof(float),
++        offsetof(AVSphericalMeshVertex, u) / sizeof(float),
++        offsetof(AVSphericalMeshVertex, v) / sizeof(float)
++    };
++    int32_t last_vertex_index[5] = {0};
++    int padding;
++
++    if (coordinate_count >= 0x80000000) {
++        av_log(NULL, AV_LOG_ERROR, "Non-zero reserved bit before coordinate_count.\n");
++        ret = AVERROR_INVALIDDATA;
++        goto fail;
++    }
++
++    if (coordinate_count == 0) {
++        av_log(NULL, AV_LOG_ERROR, "coordinate_count is 0.\n");
++        ret = AVERROR_INVALIDDATA;
++        goto fail;
++    }
++
++    if (32 * coordinate_count > get_bits_left(&gb)) {
++        ret = AVERROR_INVALIDDATA;
++        goto fail;
++    }
++
++    coordinates = av_malloc(sizeof(float) * coordinate_count);
++    if (!coordinates) {
++        ret = AVERROR(ENOMEM);
++        goto fail;
++    }
++    for (uint32_t i = 0; i < coordinate_count; ++i) {
++        union {
++            uint32_t u;
++            float f;
++        } tmp;
++        tmp.u = get_bits_long(&gb, 32);
++        coordinates[i] = tmp.f;
++    }
++
++    vertex_count = get_bits_long(&gb, 32);
++    if (vertex_count >= 0x80000000) {
++        av_log(NULL, AV_LOG_ERROR, "Non-zero reserved bit before vertex_count.\n");
++        ret = AVERROR_INVALIDDATA;
++        goto fail;
++    }
++
++    if (vertex_count == 0) {
++        av_log(NULL, AV_LOG_ERROR, "vertex_count is 0\n");
++        ret = AVERROR_INVALIDDATA;
++        goto fail;
++    }
++
++    ccsb = av_ceil_log2_c(2 * coordinate_count);
++    vcsb = av_ceil_log2_c(2 * vertex_count);
++
++    if (5 * ccsb * vertex_count > get_bits_left(&gb)) {
++        ret = AVERROR_INVALIDDATA;
++        goto fail;
++    }
++
++    mesh = av_spherical_mesh_alloc(vertex_count);
++    if (!mesh) {
++        ret = AVERROR(ENOMEM);
++        goto fail;
++    }
++
++    for (uint32_t i = 0; i < vertex_count; ++i) {
++        float* vertex_base = (float*)&(mesh->vertices[i]);
++        for (int j = 0; j < 5; ++j) {
++            int32_t delta = unzigzag(get_bits_long(&gb, ccsb));
++            int32_t min_delta = -last_vertex_index[j];
++            int32_t max_delta = coordinate_count - 1 - last_vertex_index[j];
++            int32_t index;
++            if (delta < min_delta || delta > max_delta) {
++                av_log(NULL, AV_LOG_ERROR, "Invalid coordinate delta %d %d %d.\n", delta,
++                       (delta < min_delta), (delta > max_delta));
++                ret = AVERROR_INVALIDDATA;
++                goto fail;
++            }
++            index = delta + last_vertex_index[j];
++            vertex_base[field_offsets[j]] = coordinates[index];
++            last_vertex_index[j] = index;
++        }
++    }
++    padding = 8 - (get_bits_count(&gb) & 0x7);
++    if (padding < 8) {
++        skip_bits(&gb, padding);
++    }
++
++    vertex_list_count = get_bits_long(&gb, 32);
++    if (vertex_list_count >= 0x80000000) {
++        av_log(NULL, AV_LOG_ERROR, "Non-zero reserved bit before vertex_list_count.\n");
++        ret = AVERROR_INVALIDDATA;
++        goto fail;
++    }
++
++    if (vertex_list_count == 0) {
++        av_log(NULL, AV_LOG_ERROR, "vertex_list_count is 0.\n");
++        ret = AVERROR_INVALIDDATA;
++        goto fail;
++    }
++
++    for (uint32_t i = 0; i < vertex_list_count; ++i) {
++        uint8_t texture_id = get_bits(&gb, 8);
++        uint8_t index_type = get_bits(&gb, 8);
++        uint32_t index_count = get_bits_long(&gb, 32);
++        enum AVSphericalVertexListType vertex_list_type;
++        AVSphericalVertexList* vertex_list;
++        int32_t last_index;
++
++        if (texture_id != 0) {
++            av_log(NULL, AV_LOG_ERROR, "Unexpected texture_id %d.\n", texture_id);
++            ret = AVERROR_INVALIDDATA;
++            goto fail;
++        }
++
++        if (index_count >= 0x80000000) {
++            av_log(NULL, AV_LOG_ERROR, "Non-zero reserved bit before index_count.\n");
++            ret = AVERROR_INVALIDDATA;
++            goto fail;
++        }
++
++        if (index_count == 0) {
++            av_log(NULL, AV_LOG_ERROR, "index_count is 0.\n");
++            ret = AVERROR_INVALIDDATA;
++            goto fail;
++        }
++
++        switch (index_type) {
++            case 0:
++                vertex_list_type = AV_VERTEXLIST_TRIANGLES;
++                break;
++            case 1:
++                vertex_list_type = AV_VERTEXLIST_TRIANGLE_STRIP;
++                break;
++            case 2:
++                vertex_list_type = AV_VERTEXLIST_TRIANGLE_FAN;
++                break;
++            default:
++                ret = AVERROR_INVALIDDATA;
++                goto fail;
++        }
++        vertex_list = av_spherical_mesh_add_vertex_list(mesh, vertex_list_type, index_count);
++        if (!vertex_list) {
++            ret = AVERROR(ENOMEM);
++            goto fail;
++        }
++
++        last_index = 0;
++        for (uint32_t j = 0; j < index_count; ++j) {
++            int32_t delta = unzigzag(get_bits_long(&gb, vcsb));
++            const int32_t min_delta = -last_index;
++            const int32_t max_delta = vertex_count - 1 - last_index;
++            int32_t index;
++            if (delta < min_delta || delta > max_delta) {
++                av_log(NULL, AV_LOG_ERROR, "Invalid index delta %d.\n", delta);
++                ret = AVERROR_INVALIDDATA;
++                goto fail;
++            }
++            index = delta + last_index;
++            vertex_list->indices[j] = index;
++            last_index = index;
++        }
++
++        padding = 8 - (get_bits_count(&gb) & 0x7);
++        if (padding < 8) {
++            skip_bits(&gb, padding);
++        }
++    }
++
++    ret = get_bits_count(&gb) / 8;
++    *mesh_out = mesh;
++    mesh = NULL;
++
++fail:
++    av_spherical_mesh_freep(&mesh);
++    av_freep(&coordinates);
++    return ret;
++}
++
++
++AVSphericalMesh* av_spherical_mesh_alloc(uint32_t num_vertices)
++{
++    AVSphericalMesh* mesh = av_mallocz(sizeof(AVSphericalMesh));
++    if (!mesh)
++        return NULL;
++
++    mesh->vertices = av_malloc(sizeof(AVSphericalMeshVertex) * num_vertices);
++    if (!mesh->vertices) {
++        av_freep(&mesh);
++        return NULL;
++    }
++    mesh->num_vertices = num_vertices;
++    return mesh;
++}
++
++void av_spherical_mesh_freep(AVSphericalMesh** mesh)
++{
++    if (!*mesh) return;
++    av_free((*mesh)->vertices);
++    for (uint32_t i = 0; i < (*mesh)->num_vertex_lists; i++) {
++        av_free((*mesh)->vertex_lists[i].indices);
++    }
++    av_free((*mesh)->vertex_lists);
++    av_freep(mesh);
++}
++
++AVSphericalVertexList* av_spherical_mesh_add_vertex_list(AVSphericalMesh* mesh,
++                                                         enum AVSphericalVertexListType type,
++                                                         uint32_t num_indices)
++{
++    AVSphericalVertexList* new_vertex_lists =
++        av_realloc_array(mesh->vertex_lists, mesh->num_vertex_lists + 1, sizeof(mesh->vertex_lists[0]));
++    AVSphericalVertexList* vertex_list;
++
++    if (!new_vertex_lists)
++        return NULL;
++
++    mesh->vertex_lists = new_vertex_lists;
++    vertex_list = &mesh->vertex_lists[mesh->num_vertex_lists];
++
++    vertex_list->type = type;
++    vertex_list->num_indices = num_indices;
++    vertex_list->indices = av_malloc(sizeof(vertex_list->indices[0]) * num_indices);
++    if (!vertex_list->indices)
++        return NULL;
++
++    mesh->num_vertex_lists++;
++    return vertex_list;
++}
++
++int av_spherical_mapping_to_mesh(const AVSphericalMapping* spherical, AVSphericalMesh** output_mesh)
++{
++    // TODO: Add support for non-mesh mesh projections.
++    if (spherical->projection == AV_SPHERICAL_EQUIRECTANGULAR) {
++        const int num_rows = 128;
++        const int num_cols = 128;
++        const int num_vertices = (num_rows + 1) * (num_cols + 1);
++        const int num_indices = num_rows * num_cols * 6;
++        const float min_pitch = -90 * M_PI / 180;
++        const float max_pitch = 90 * M_PI / 180;
++        const float delta_pitch = (max_pitch - min_pitch) / num_rows;
++        const float min_yaw = -180 * M_PI / 180;
++        const float max_yaw = 180 * M_PI / 180;
++        const float delta_yaw = (max_yaw - min_yaw) / num_cols;
++        const float delta_u = 1.0 / num_cols;
++        const float delta_v = 1.0 / num_rows;
++
++        int row;
++        int col;
++        float pitch, v;
++        uint32_t row_vertex_index;
++        uint32_t* indices;
++        AVSphericalVertexList* vertex_list;
++        AVSphericalMeshVertex* vertex;
++
++        *output_mesh = av_spherical_mesh_alloc(num_vertices);
++        if (!*output_mesh)
++            return AVERROR(ENOMEM);
++
++        vertex_list = av_spherical_mesh_add_vertex_list(*output_mesh, AV_VERTEXLIST_TRIANGLES, num_indices);
++        if (!vertex_list)
++            return AVERROR(ENOMEM);
++
++        pitch = min_pitch;
++        v = 0;
++        vertex = (*output_mesh)->vertices;
++        for (row = 0; row < (num_rows + 1); ++row) {
++            float yaw = min_yaw;
++            float u = 0;
++            for (col = 0; col < (num_cols + 1); ++col) {
++                vertex->x = sin(yaw) * cos(pitch);
++                vertex->y = sin(pitch);
++                vertex->z = -cos(yaw) * cos(pitch);
++                vertex->u = u;
++                vertex->v = v;
++
++                vertex++;
++                yaw += delta_yaw;
++                u += delta_u;
++            }
++            pitch += delta_pitch;
++            v += delta_v;
++        }
++
++        row_vertex_index = 0;
++        indices = vertex_list->indices;
++        for (row = 0; row < num_rows; ++row) {
++            const uint32_t next_row_vertex_index = row_vertex_index + num_cols + 1;
++
++            for (col = 0; col < num_cols; ++col) {
++                *indices++ = row_vertex_index + col;
++                *indices++ = next_row_vertex_index + 1 + col;
++                *indices++ = next_row_vertex_index + col;
++
++                *indices++ = row_vertex_index + col;
++                *indices++ = row_vertex_index + 1 + col;
++                *indices++ = next_row_vertex_index + 1 + col;
++            }
++            row_vertex_index = next_row_vertex_index;
++        }
++    } else if (spherical->projection == AV_SPHERICAL_MESH) {
++        AVIOContext pb;
++        uint32_t version_flags;
++        uint32_t crc;
++        uint32_t encoding_four_cc;
++        uint8_t *inflate_buffer = NULL;
++        const uint8_t *mesh_buffer = spherical->mesh_data + 12;
++        int mesh_buffer_size = spherical->mesh_size - 12;
++
++        ffio_init_context(&pb, (unsigned char *)spherical->mesh_data, spherical->mesh_size, 0, NULL, NULL, NULL, NULL);
++        version_flags = avio_rb32(&pb);
++        crc = avio_rb32(&pb);
++        encoding_four_cc = avio_rb32(&pb);
++
++        if (version_flags != 0) {
++            av_log(NULL, AV_LOG_ERROR, "Unsupported version and flags: %08x\n", version_flags);
++            return AVERROR_INVALIDDATA;
++        }
++
++        if (encoding_four_cc == 0x64666c38) { // dfl8
++#if CONFIG_ZLIB
++            z_stream inflate_stream;
++#define DECOMPRESS_BUF_SIZE 1 * 1024 * 1024
++            int inflate_ret;
++
++            inflate_buffer = av_malloc(DECOMPRESS_BUF_SIZE);
++            if (!inflate_buffer)
++                return AVERROR(ENOMEM);
++
++            memset(&inflate_stream, 0, sizeof(inflate_stream));
++            inflate_stream.next_in  = mesh_buffer;
++            inflate_stream.avail_in = mesh_buffer_size;
++            inflate_stream.next_out = inflate_buffer;
++            inflate_stream.avail_out = DECOMPRESS_BUF_SIZE;
++
++            if (inflateInit2(&inflate_stream, -15) != Z_OK) {
++                av_log(NULL, AV_LOG_WARNING, "Error during zlib initialisation: %s\n",
++                       inflate_stream.msg);
++                av_freep(&inflate_buffer);
++                return AVERROR(ENOSYS);
++            }
++
++            inflate_ret = inflate(&inflate_stream, Z_SYNC_FLUSH);
++            if (inflate_ret != Z_STREAM_END) {
++                av_log(NULL, AV_LOG_WARNING, "inflate() failed : %d\n", inflate_ret);
++                av_freep(&inflate_buffer);
++                return AVERROR(ENOSYS);
++            }
++
++            mesh_buffer = inflate_buffer;
++            mesh_buffer_size = inflate_stream.next_out - inflate_buffer;
++
++            inflateEnd(&inflate_stream);
++#else  /* CONFIG_ZLIB */
++            av_log(NULL, AV_LOG_ERROR, "Compressed mesh requires zlib which is not available in this build.\n");
++            return AVERROR_EXTERNAL;
++#endif   /* CONFIG_ZLIB */
++        } else if (encoding_four_cc != 0x72617720) { // != 'raw '
++            av_log(NULL, AV_LOG_WARNING, "Unexpected encoding_four_cc : %08x\n",
++                   encoding_four_cc);
++            return AVERROR_INVALIDDATA;
++        }
++
++        {
++            GetBitContext gb;
++            int ret = init_get_bits8(&gb, mesh_buffer, mesh_buffer_size);
++            AVSphericalMesh* mesh = NULL;
++
++            if (ret < 0) {
++                av_freep(&inflate_buffer);
++                return ret;
++            }
++
++            while (get_bits_left(&gb) >= 64) {
++                uint32_t box_size = get_bits_long(&gb, 32);
++                uint32_t box_type = get_bits_long(&gb, 32);
++                if (box_size <= 8 || (8 * (box_size - 8)) > get_bits_left(&gb)) {
++                    av_freep(&inflate_buffer);
++                    return AVERROR_INVALIDDATA;
++                }
++                if (box_type != 0x6d657368) { // Make sure this is a 'mesh'
++                    break;
++                }
++
++                mesh = NULL;
++                ret = parse_mesh_box(mesh_buffer + (get_bits_count(&gb) / 8), box_size, &mesh);
++                if (ret < 0) {
++                    av_freep(&inflate_buffer);
++                    return ret;
++                }
++
++                if (!*output_mesh) {
++                    *output_mesh = mesh;
++                    mesh = NULL;
++                }
++                av_spherical_mesh_freep(&mesh);
++
++                skip_bits(&gb, 8 * (box_size - 8));
++            }
++        }
++        av_freep(&inflate_buffer);
++    } else {
++        av_log(NULL, AV_LOG_WARNING, "Generating a mesh for '%s' projection is not supported yet.\n",
++               av_spherical_projection_name(spherical->projection));
++    }
++    return 0;
++}
++
++int av_spherical_mesh_to_obj(const AVSphericalMesh* mesh, const char* filename)
++{
++    int ret = 0;
++    uint32_t i;
++    FILE* obj_file = fopen(filename, "wb");
++    if (!obj_file) return -1;
++
++    for (i = 0; i < mesh->num_vertices; ++i) {
++        fprintf(obj_file, "v %f %f %f\nvt %f %f\n",
++                mesh->vertices[i].x,
++                mesh->vertices[i].y,
++                mesh->vertices[i].z,
++                mesh->vertices[i].u,
++                mesh->vertices[i].v);
++    }
++    for (i = 0; ret == 0 && i < mesh->num_vertex_lists; ++i) {
++        uint32_t j;
++        const AVSphericalVertexList* vertex_list = &(mesh->vertex_lists[i]);
++        switch (vertex_list->type) {
++            case AV_VERTEXLIST_TRIANGLES:
++                for (j = 0; j < vertex_list->num_indices; j += 3) {
++                    int a = vertex_list->indices[j] + 1;
++                    int b = vertex_list->indices[j + 1] + 1;
++                    int c = vertex_list->indices[j + 2] + 1;
++                    fprintf(obj_file, "f %d/%d %d/%d %d/%d\n",
++                            a, a, b, b, c, c);
++                }
++                break;
++            case AV_VERTEXLIST_TRIANGLE_STRIP:
++                for (j = 2; j < vertex_list->num_indices; ++j) {
++                    int a = vertex_list->indices[j - 2] + 1;
++                    int b = vertex_list->indices[j - 1] + 1;
++                    int c = vertex_list->indices[j] + 1;
++                    if (j % 2) {
++                        int tmp = a;
++                        a = b;
++                        b = tmp;
++                    }
++
++                    fprintf(obj_file, "f %d/%d %d/%d %d/%d\n",
++                            a, a, b, b, c, c);
++                }
++                break;
++            default:
++                av_log(NULL, AV_LOG_WARNING, "vertex_list->type %d not supported yet.\n", vertex_list->type);
++                ret = -1;
++                break;
++        }
++    }
++    fclose(obj_file);
++    return ret;
++}
+diff --git a/libavformat/spherical.h b/libavformat/spherical.h
+new file mode 100644
+index 0000000000..1049277b75
+--- /dev/null
++++ b/libavformat/spherical.h
+@@ -0,0 +1,71 @@
++/*
++ * Copyright (c) 2018 Aaron Colwell <acolwell@google.com>
++ *
++ * This file is part of FFmpeg.
++ *
++ * FFmpeg is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * FFmpeg is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with FFmpeg; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
++ */
++
++/**
++ * @file
++ * Spherical video
++ */
++
++#ifndef AVFORMAT_SPHERICAL_H
++#define AVFORMAT_SPHERICAL_H
++
++#include "libavutil/spherical.h"
++
++enum AVSphericalVertexListType {
++    AV_VERTEXLIST_TRIANGLES,
++    AV_VERTEXLIST_TRIANGLE_STRIP,
++    AV_VERTEXLIST_TRIANGLE_FAN,
++};
++
++typedef struct AVSphericalVertexList {
++    enum AVSphericalVertexListType type;
++    uint32_t num_indices;
++    uint32_t* indices;
++} AVSphericalVertexList;
++
++typedef struct AVSphericalMeshVertex {
++    float x;
++    float y;
++    float z;
++    float u;
++    float v;
++} AVSphericalMeshVertex;
++
++typedef struct AVSphericalMesh {
++    uint32_t num_vertices;
++    AVSphericalMeshVertex* vertices;
++    uint32_t num_vertex_lists;
++    AVSphericalVertexList* vertex_lists;
++} AVSphericalMesh;
++
++AVSphericalMesh* av_spherical_mesh_alloc(uint32_t num_vertices);
++void av_spherical_mesh_freep(AVSphericalMesh** mesh);
++
++AVSphericalVertexList* av_spherical_mesh_add_vertex_list(AVSphericalMesh* mesh,
++                                                         enum AVSphericalVertexListType type,
++                                                         uint32_t num_indices);
++
++/* Convert a spherical mapping into a mesh that can be used for rendering, */
++int av_spherical_mapping_to_mesh(const AVSphericalMapping* spherical, AVSphericalMesh** mesh);
++
++/* Write mesh to disk as a Wavefront OBJ file. */
++int av_spherical_mesh_to_obj(const AVSphericalMesh* mesh, const char* filename);
++
++#endif /* AVFORMAT_SPHERICAL_H */
+-- 
+2.7.4
+
