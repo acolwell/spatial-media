@@ -1,0 +1,101 @@
+From da056db448dcc93aeae263422fa1b68ed7e24a1c Mon Sep 17 00:00:00 2001
+From: Aaron Colwell <acolwell@users.noreply.github.com>
+Date: Sat, 20 Oct 2018 12:38:53 -0700
+Subject: [PATCH] Add ffprobe support for saving meshes as Wavefront OBJs.
+
+---
+ fftools/ffprobe.c | 36 ++++++++++++++++++++++++++++++++++++
+ 1 file changed, 36 insertions(+)
+
+diff --git a/fftools/ffprobe.c b/fftools/ffprobe.c
+index 544786e..758f18b 100644
+--- a/fftools/ffprobe.c
++++ b/fftools/ffprobe.c
+@@ -29,6 +29,7 @@
+ #include <string.h>
+ 
+ #include "libavformat/avformat.h"
++#include "libavformat/spherical.h"
+ #include "libavcodec/avcodec.h"
+ #include "libavutil/avassert.h"
+ #include "libavutil/avstring.h"
+@@ -44,6 +45,7 @@
+ #include "libavutil/intreadwrite.h"
+ #include "libavutil/libm.h"
+ #include "libavutil/parseutils.h"
++#include "libavutil/spherical.h"
+ #include "libavutil/timecode.h"
+ #include "libavutil/timestamp.h"
+ #include "libavdevice/avdevice.h"
+@@ -119,6 +121,8 @@ static char *print_format;
+ static char *stream_specifier;
+ static char *show_data_hash;
+ 
++static char *save_mesh_filename;
++
+ typedef struct ReadInterval {
+     int id;             ///< identifier
+     int64_t start, end; ///< start, end in second/AV_TIME_BASE units
+@@ -2818,6 +2822,32 @@ static void show_error(WriterContext *w, int err)
+     writer_print_section_footer(w);
+ }
+ 
++static int save_spherical_mesh(WriterContext *w, InputFile *ifile)
++{
++  int ret = 0;
++  int i;
++  for (i = 0; i < ifile->nb_streams; i++) {
++    if (selected_streams[i]) {
++      AVStream* stream = ifile->streams[i].st;
++      AVSphericalMapping* spherical_mapping = (AVSphericalMapping*)av_stream_get_side_data(stream, AV_PKT_DATA_SPHERICAL, NULL);
++      AVSphericalMesh* mesh = NULL;
++
++      if (!spherical_mapping || spherical_mapping->projection != AV_SPHERICAL_MESH)
++	continue;
++
++      ret = av_spherical_mapping_to_mesh(spherical_mapping, &mesh);
++      if (ret == 0) {
++	ret = av_spherical_mesh_to_obj(mesh, save_mesh_filename);
++	if (ret != 0)
++	  print_str("Failed to save mesh", save_mesh_filename);
++      }
++      av_spherical_mesh_freep(&mesh);
++      break;
++    }
++  }
++  return ret;
++}
++
+ static int open_input_file(InputFile *ifile, const char *filename)
+ {
+     int err, i;
+@@ -3022,6 +3052,10 @@ static int probe_file(WriterContext *wctx, const char *filename)
+         ret = show_format(wctx, &ifile);
+         CHECK_END;
+     }
++    if (save_mesh_filename) {
++      ret = save_spherical_mesh(wctx, &ifile);
++      CHECK_END;
++    }
+ 
+ end:
+     if (ifile.fmt_ctx)
+@@ -3528,6 +3562,7 @@ static const OptionDef real_options[] = {
+     { "i", HAS_ARG, {.func_arg = opt_input_file_i}, "read specified file", "input_file"},
+     { "find_stream_info", OPT_BOOL | OPT_INPUT | OPT_EXPERT, { &find_stream_info },
+         "read and decode the streams to fill missing information with heuristics" },
++    { "save_spherical_mesh", OPT_STRING | HAS_ARG, {(void*)&save_mesh_filename}},
+     { NULL, },
+ };
+ 
+@@ -3684,6 +3719,7 @@ int main(int argc, char **argv)
+     }
+ 
+ end:
++    av_freep(&save_mesh_filename);
+     av_freep(&print_format);
+     av_freep(&read_intervals);
+     av_hash_freep(&hash);
+-- 
+2.7.4
+
