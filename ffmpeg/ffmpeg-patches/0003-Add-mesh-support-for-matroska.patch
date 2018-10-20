@@ -1,4 +1,4 @@
-From 2081497b29ace6f1bbd498b314ca7f87b208abe0 Mon Sep 17 00:00:00 2001
+From b4d4ba1ad795351a78b3ecc659d41b1d4e0680a6 Mon Sep 17 00:00:00 2001
 From: Aaron Colwell <acolwell@google.com>
 Date: Sat, 30 Sep 2017 14:35:48 -0700
 Subject: [PATCH] Add mesh support for matroska.
@@ -9,7 +9,7 @@ Subject: [PATCH] Add mesh support for matroska.
  2 files changed, 22 insertions(+), 4 deletions(-)
 
 diff --git a/libavformat/matroskadec.c b/libavformat/matroskadec.c
-index 1ded431b80..0c7d2ba6a8 100644
+index 1ded431..0c7d2ba 100644
 --- a/libavformat/matroskadec.c
 +++ b/libavformat/matroskadec.c
 @@ -1936,7 +1936,7 @@ static int mkv_parse_video_color(AVStream *st, const MatroskaTrack *track) {
@@ -54,7 +54,7 @@ index 1ded431b80..0c7d2ba6a8 100644
      spherical->projection = projection;
  
 diff --git a/libavformat/matroskaenc.c b/libavformat/matroskaenc.c
-index 5950b4de44..80e6b74961 100644
+index 5950b4d..80e6b74 100644
 --- a/libavformat/matroskaenc.c
 +++ b/libavformat/matroskaenc.c
 @@ -1001,6 +1001,12 @@ static int mkv_write_video_projection(AVFormatContext *s, AVIOContext *pb,

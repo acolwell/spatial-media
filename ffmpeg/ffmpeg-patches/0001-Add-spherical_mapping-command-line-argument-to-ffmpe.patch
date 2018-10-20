@@ -1,4 +1,4 @@
-From 651ef0da8480ba81823cce5fbba0abe733438924 Mon Sep 17 00:00:00 2001
+From 347e3a46e2dfeb2418de088de1c56f142b3232db Mon Sep 17 00:00:00 2001
 From: Aaron Colwell <acolwell@google.com>
 Date: Fri, 2 Jun 2017 16:11:21 -0700
 Subject: [PATCH] Add spherical_mapping command-line argument to ffmpeg.
@@ -8,14 +8,14 @@ that don't already have it.
 ---
  fftools/ffmpeg.c     |  12 +++-
  fftools/ffmpeg.h     |   4 ++
- fftools/ffmpeg_opt.c | 159 ++++++++++++++++++++++++++++++++++++++++++-
+ fftools/ffmpeg_opt.c | 159 ++++++++++++++++++++++++++++++++++++++++++++++++++-
  3 files changed, 173 insertions(+), 2 deletions(-)
 
 diff --git a/fftools/ffmpeg.c b/fftools/ffmpeg.c
-index 4dbe72186d..4fc5af0091 100644
+index c0214c4..c5c9155 100644
 --- a/fftools/ffmpeg.c
 +++ b/fftools/ffmpeg.c
-@@ -3091,6 +3091,10 @@ static int init_output_stream_streamcopy(OutputStream *ost)
+@@ -3095,6 +3095,10 @@ static int init_output_stream_streamcopy(OutputStream *ost)
              const AVPacketSideData *sd_src = &ist->st->side_data[i];
              uint8_t *dst_data;
  
@@ -26,7 +26,7 @@ index 4dbe72186d..4fc5af0091 100644
              dst_data = av_stream_new_side_data(ost->st, sd_src->type, sd_src->size);
              if (!dst_data)
                  return AVERROR(ENOMEM);
-@@ -3523,7 +3527,13 @@ static int init_output_stream(OutputStream *ost, char *error, int error_len)
+@@ -3527,7 +3531,13 @@ static int init_output_stream(OutputStream *ost, char *error, int error_len)
              int i;
              for (i = 0; i < ist->st->nb_side_data; i++) {
                  AVPacketSideData *sd = &ist->st->side_data[i];
@@ -42,7 +42,7 @@ index 4dbe72186d..4fc5af0091 100644
                      return AVERROR(ENOMEM);
                  memcpy(dst, sd->data, sd->size);
 diff --git a/fftools/ffmpeg.h b/fftools/ffmpeg.h
-index d44b7a5c72..4dcfcff0be 100644
+index d44b7a5..4dcfcff 100644
 --- a/fftools/ffmpeg.h
 +++ b/fftools/ffmpeg.h
 @@ -230,6 +230,8 @@ typedef struct OptionsContext {
@@ -64,7 +64,7 @@ index d44b7a5c72..4dcfcff0be 100644
      AVRational frame_aspect_ratio;
  
 diff --git a/fftools/ffmpeg_opt.c b/fftools/ffmpeg_opt.c
-index d7a7eb0662..4cd42e6805 100644
+index d7a7eb0..4cd42e6 100644
 --- a/fftools/ffmpeg_opt.c
 +++ b/fftools/ffmpeg_opt.c
 @@ -40,6 +40,8 @@

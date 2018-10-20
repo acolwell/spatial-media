@@ -1,20 +1,20 @@
-From 4300a3d6f9f385550657718ddd87a2092d1c2581 Mon Sep 17 00:00:00 2001
+From 77957dd811d8ed1fc526d0c19ec9c9bdb6d61d1b Mon Sep 17 00:00:00 2001
 From: Aaron Colwell <acolwell@google.com>
 Date: Mon, 30 Apr 2018 08:34:45 -0700
 Subject: [PATCH] Add support for spherical mesh rendering.
 
 ---
- libavdevice/opengl_enc.c         | 227 ++++++++++++--
+ libavdevice/opengl_enc.c         | 227 +++++++++++++++--
  libavdevice/opengl_enc_shaders.h |   4 +-
  libavformat/Makefile             |   1 +
- libavformat/spherical.c          | 516 +++++++++++++++++++++++++++++++
- libavformat/spherical.h          |  71 +++++
+ libavformat/spherical.c          | 516 +++++++++++++++++++++++++++++++++++++++
+ libavformat/spherical.h          |  71 ++++++
  5 files changed, 794 insertions(+), 25 deletions(-)
  create mode 100644 libavformat/spherical.c
  create mode 100644 libavformat/spherical.h
 
 diff --git a/libavdevice/opengl_enc.c b/libavdevice/opengl_enc.c
-index 54c7e610bd..92aa0615b3 100644
+index 54c7e61..92aa061 100644
 --- a/libavdevice/opengl_enc.c
 +++ b/libavdevice/opengl_enc.c
 @@ -22,6 +22,7 @@
@@ -391,7 +391,7 @@ index 54c7e610bd..92aa0615b3 100644
      ret = AVERROR_EXTERNAL;
      OPENGL_ERROR_CHECK(opengl);
 diff --git a/libavdevice/opengl_enc_shaders.h b/libavdevice/opengl_enc_shaders.h
-index 67ee0ae7b4..4305a981a0 100644
+index 67ee0ae..4305a98 100644
 --- a/libavdevice/opengl_enc_shaders.h
 +++ b/libavdevice/opengl_enc_shaders.h
 @@ -26,6 +26,8 @@
@@ -413,7 +413,7 @@ index 67ee0ae7b4..4305a981a0 100644
  
  /**
 diff --git a/libavformat/Makefile b/libavformat/Makefile
-index 3eeca5091d..fb896c25ee 100644
+index 3eeca50..fb896c2 100644
 --- a/libavformat/Makefile
 +++ b/libavformat/Makefile
 @@ -21,6 +21,7 @@ OBJS = allformats.o         \
@@ -426,7 +426,7 @@ index 3eeca5091d..fb896c25ee 100644
  
 diff --git a/libavformat/spherical.c b/libavformat/spherical.c
 new file mode 100644
-index 0000000000..71c222c2f4
+index 0000000..71c222c
 --- /dev/null
 +++ b/libavformat/spherical.c
 @@ -0,0 +1,516 @@
@@ -948,7 +948,7 @@ index 0000000000..71c222c2f4
 +}
 diff --git a/libavformat/spherical.h b/libavformat/spherical.h
 new file mode 100644
-index 0000000000..1049277b75
+index 0000000..1049277
 --- /dev/null
 +++ b/libavformat/spherical.h
 @@ -0,0 +1,71 @@
