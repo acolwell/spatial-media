@@ -42,32 +42,32 @@ def load(fh):
     contents = container.load_multiple(fh, 0, size)
 
     if not contents:
-        print "Error, failed to load .mp4 file."
+        print("Error, failed to load .mp4 file.")
         return None
     elif len(contents) == 0:
-        print ("Error, no boxes found.")
+        print("Error, no boxes found.")
         return None
 
     loaded_mpeg4 = Mpeg4Container()
     loaded_mpeg4.contents = contents
 
     for element in loaded_mpeg4.contents:
-        if (element.name == "moov"):
+        if (element.name == constants.TAG_MOOV):
             loaded_mpeg4.moov_box = element
-        if (element.name == "free"):
+        if (element.name == constants.TAG_FREE):
             loaded_mpeg4.free_box = element
-        if (element.name == "mdat"
+        if (element.name == constants.TAG_MDAT
                 and not loaded_mpeg4.first_mdat_box):
             loaded_mpeg4.first_mdat_box = element
-        if (element.name == "ftyp"):
+        if (element.name == constants.TAG_FTYP):
             loaded_mpeg4.ftyp_box = element
 
     if not loaded_mpeg4.moov_box:
-        print ("Error, file does not contain moov box.")
+        print("Error, file does not contain moov box.")
         return None
 
     if not loaded_mpeg4.first_mdat_box:
-        print ("Error, file does not contain mdat box.")
+        print("Error, file does not contain mdat box.")
         return None
 
     loaded_mpeg4.first_mdat_position = \
@@ -98,12 +98,12 @@ class Mpeg4Container(container.Container):
 
     def merge(self, element):
         """Mpeg4 containers do not support merging."""
-        print "Cannot merge mpeg4 files"
+        print("Cannot merge mpeg4 files")
         exit(0)
 
     def print_structure(self):
         """Print mpeg4 file structure recursively."""
-        print "mpeg4 [", self.content_size, "]"
+        print("mpeg4 [{}]".format(self.content_size))
 
         size = len(self.contents)
         for i in range(size):

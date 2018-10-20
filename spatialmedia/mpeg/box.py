@@ -20,7 +20,7 @@
 Tool for loading mpeg4 files and manipulating atoms.
 """
 
-import StringIO
+import io
 import struct
 
 from spatialmedia.mpeg import constants
@@ -48,11 +48,11 @@ def load(fh, position, end):
         header_size = 16
 
     if size < 8:
-        print "Error, invalid size", size, "in", name, "at", position
+        print("Error, invalid size {} in {} at {}".format(size, name, position))
         return None
 
     if (position + size) > end:
-        print ("Error: Leaf box size exceeds bounds.")
+        print("Error: Leaf box size exceeds bounds.")
         return None
 
     new_box = Box()
@@ -123,7 +123,7 @@ class Box(object):
         """Prints the box structure."""
         size1 = self.header_size
         size2 = self.content_size
-        print "{0} {1} [{2}, {3}]".format(indent, self.name, size1, size2)
+        print("{0} {1} [{2}, {3}]".format(indent, self.name, size1, size2))
 
 
 def tag_copy(in_fh, out_fh, size):
@@ -162,7 +162,7 @@ def index_copy(in_fh, out_fh, box, mode, mode_length, delta=0):
     if not box.contents:
         fh.seek(box.content_start())
     else:
-        fh = StringIO.StringIO(box.contents)
+        fh = io.BytesIO(box.contents)
 
     header = struct.unpack(">I", fh.read(4))[0]
     values = struct.unpack(">I", fh.read(4))[0]
@@ -174,7 +174,7 @@ def index_copy(in_fh, out_fh, box, mode, mode_length, delta=0):
         content = fh.read(mode_length)
         content = struct.unpack(mode, content)[0] + delta
         new_contents.append(struct.pack(mode, content))
-    out_fh.write("".join(new_contents))
+    out_fh.write(b"".join(new_contents))
 
 
 def stco_copy(in_fh, out_fh, box, delta=0):
