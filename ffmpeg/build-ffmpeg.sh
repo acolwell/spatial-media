@@ -31,7 +31,7 @@ if [ ! -f $BUILD_DIR/lib/libogg.a ]; then
     make install
 fi
 
-#Build Vorbis
+# Build Vorbis
 if [ ! -d $BUILD_TMP_DIR/libvorbis-$VORBIS_VERS ]; then
     cd $BUILD_TMP_DIR
     tar xvf $THIRD_PARTY_DIR/libvorbis-$VORBIS_VERS.tar.gz
@@ -43,6 +43,7 @@ if [ ! -f $BUILD_DIR/lib/libvorbis.a ]; then
     make install
 fi
 
+# Build Opus
 if [ ! -d $BUILD_TMP_DIR/opus-$OPUS_VERS ]; then
     cd $BUILD_TMP_DIR
     tar xvf $THIRD_PARTY_DIR/opus-$OPUS_VERS.tar.gz
@@ -54,10 +55,26 @@ if [ ! -f $BUILD_DIR/lib/libopus.a ]; then
     make install
 fi
 
+if [ ! -d $BUILD_TMP_DIR/rav1e-$RAV1E_VERS ]; then
+    cd $BUILD_TMP_DIR
+    tar xvf $THIRD_PARTY_DIR/rav1e-$RAV1E_VERS.tar.gz
+fi
+if [ ! -f $BUILD_DIR/lib/librav1e.a ]; then
+    cd $BUILD_TMP_DIR
+    cd rav1e-$RAV1E_VERS
+
+    cargo cinstall --release \
+     --prefix=$BUILD_DIR \
+     --libdir=$BUILD_DIR/lib \
+     --includedir=$BUILD_DIR/include
+fi
+
+
 # Build libvpx
 if [ ! -d $BUILD_TMP_DIR/libvpx-$VPX_VERS ]; then
-    cd $BUILD_TMP_DIR
-    tar xvf $THIRD_PARTY_DIR/libvpx-$VPX_VERS.tar.bz2
+    mkdir $BUILD_TMP_DIR/libvpx-$VPX_VERS
+    cd $BUILD_TMP_DIR/libvpx-$VPX_VERS
+    tar xvf $THIRD_PARTY_DIR/libvpx-$VPX_VERS.tar.gz
 fi
 if [ ! -f $BUILD_DIR/lib/libvpx.a ]; then
     cd $BUILD_TMP_DIR/libvpx-$VPX_VERS
@@ -66,13 +83,34 @@ if [ ! -f $BUILD_DIR/lib/libvpx.a ]; then
     make install
 fi
 
-#Build x264 source
-if [ ! -d $BUILD_TMP_DIR/x264-snapshot-$X264_VERS-stable ]; then
+#Build aom source
+if [ ! -d $BUILD_TMP_DIR/aom ]; then
     cd $BUILD_TMP_DIR
-    tar xvf $THIRD_PARTY_DIR/x264-snapshot-$X264_VERS-stable.tar.bz2
+    git clone https://aomedia.googlesource.com/aom
+    cd $BUILD_TMP_DIR/aom
+    git checkout $AOM_VERS
+fi
+if [ ! -f $BUILD_DIR/lib/libaom.a ]; then
+    cd $BUILD_TMP_DIR/aom
+    if [ ! -d $BUILD_TMP_DIR/aom/aom_build ]; then
+        mkdir aom_build
+    fi
+    cd aom_build
+    cmake -DCMAKE_INSTALL_PREFIX=$BUILD_DIR ..
+    make -j$PROCS
+    make install
+fi
+
+
+#Build x264 source
+if [ ! -d $BUILD_TMP_DIR/x264 ]; then
+    cd $BUILD_TMP_DIR
+    git clone https://code.videolan.org/videolan/x264.git
+    cd $BUILD_TMP_DIR/x264
+    git checkout $X264_VERS
 fi
 if [ ! -f $BUILD_DIR/lib/libx264.a ]; then
-    cd $BUILD_TMP_DIR/x264-snapshot-$X264_VERS-stable
+    cd $BUILD_TMP_DIR/x264
     ./configure --prefix=$BUILD_DIR --enable-static --enable-pic --disable-avs --disable-thread
     make -j$PROCS
     make install
@@ -81,10 +119,11 @@ fi
 #Build faac
 if [ ! -d $BUILD_TMP_DIR/faac-$FAAC_VERS ]; then
     cd $BUILD_TMP_DIR
-    tar jxvf $THIRD_PARTY_DIR/faac-1.28.tar.bz2
+    tar zxvf $THIRD_PARTY_DIR/faac-$FAAC_VERS.tar.gz
 fi
 if [ ! -f $BUILD_DIR/lib/libfaac.a ]; then
     cd $BUILD_TMP_DIR/faac-$FAAC_VERS
+    ./bootstrap
     ./configure -C --prefix=$BUILD_DIR --without-mp4v2 --enable-static
     make -j$PROCS
     make install
@@ -129,10 +168,14 @@ if [ ! -d ffmpeg ]; then
 fi
 cd ffmpeg
 ./configure --prefix=$BUILD_DIR --enable-static \
-  --enable-libx264 --enable-libmp3lame --enable-libvpx --enable-libvorbis --enable-libopus \
+  --enable-libx264 --enable-libvpx --enable-libaom --enable-librav1e \
+  --enable-libmp3lame --enable-libvorbis --enable-libopus \
   --enable-gpl --enable-nonfree \
   --enable-opengl \
-  --extra-cflags=-I$BUILD_DIR/include  \
+  --enable-alsa \
+  --enable-libpulse \
+  --enable-pic \
+  --extra-cflags="-I$BUILD_DIR/include -fPIE"  \
   --extra-ldflags="-L$BUILD_DIR/lib -lpthread" \
   --extra-libs="$BUILD_DIR/lib/libfaac.a $BUILD_DIR/lib/libmp3lame.a $BUILD_DIR/lib/libx264.a $BUILD_DIR/lib/libopus.a"
 make -j$PROCS

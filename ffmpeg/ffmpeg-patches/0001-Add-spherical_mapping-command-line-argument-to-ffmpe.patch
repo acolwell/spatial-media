@@ -1,21 +1,21 @@
-From 347e3a46e2dfeb2418de088de1c56f142b3232db Mon Sep 17 00:00:00 2001
-From: Aaron Colwell <acolwell@google.com>
-Date: Fri, 2 Jun 2017 16:11:21 -0700
-Subject: [PATCH] Add spherical_mapping command-line argument to ffmpeg.
+From e070b97a8ec9b37bf4f99148507bedebae97a814 Mon Sep 17 00:00:00 2001
+From: Aaron Colwell <300262+acolwell@users.noreply.github.com>
+Date: Sat, 18 Jul 2020 00:39:57 -0700
+Subject: [PATCH 1/6] Add spherical_mapping command-line argument to ffmpeg.
 
 This allows adding AVSphericalMapping information to files
 that don't already have it.
 ---
  fftools/ffmpeg.c     |  12 +++-
  fftools/ffmpeg.h     |   4 ++
- fftools/ffmpeg_opt.c | 159 ++++++++++++++++++++++++++++++++++++++++++++++++++-
- 3 files changed, 173 insertions(+), 2 deletions(-)
+ fftools/ffmpeg_opt.c | 160 ++++++++++++++++++++++++++++++++++++++++++-
+ 3 files changed, 174 insertions(+), 2 deletions(-)
 
 diff --git a/fftools/ffmpeg.c b/fftools/ffmpeg.c
-index c0214c4..c5c9155 100644
+index 2e9448ea2b..287fc42624 100644
 --- a/fftools/ffmpeg.c
 +++ b/fftools/ffmpeg.c
-@@ -3095,6 +3095,10 @@ static int init_output_stream_streamcopy(OutputStream *ost)
+@@ -3086,6 +3086,10 @@ static int init_output_stream_streamcopy(OutputStream *ost)
              const AVPacketSideData *sd_src = &ist->st->side_data[i];
              uint8_t *dst_data;
  
@@ -26,26 +26,26 @@ index c0214c4..c5c9155 100644
              dst_data = av_stream_new_side_data(ost->st, sd_src->type, sd_src->size);
              if (!dst_data)
                  return AVERROR(ENOMEM);
-@@ -3527,7 +3531,13 @@ static int init_output_stream(OutputStream *ost, char *error, int error_len)
-             int i;
+@@ -3531,7 +3535,13 @@ static int init_output_stream(OutputStream *ost, char *error, int error_len)
              for (i = 0; i < ist->st->nb_side_data; i++) {
                  AVPacketSideData *sd = &ist->st->side_data[i];
--                uint8_t *dst = av_stream_new_side_data(ost->st, sd->type, sd->size);
-+                uint8_t *dst;
+                 if (sd->type != AV_PKT_DATA_CPB_PROPERTIES) {
+-                    uint8_t *dst = av_stream_new_side_data(ost->st, sd->type, sd->size);
++                    uint8_t *dst;
 +
-+                if ((sd->type == AV_PKT_DATA_SPHERICAL && ost->spherical_mapping_overridden) ||
-+                    (sd->type == AV_PKT_DATA_STEREO3D && ost->stereo3d_overridden))
-+                    continue;
++                    if ((sd->type == AV_PKT_DATA_SPHERICAL && ost->spherical_mapping_overridden) ||
++                        (sd->type == AV_PKT_DATA_STEREO3D && ost->stereo3d_overridden))
++                        continue;
 +
-+                dst = av_stream_new_side_data(ost->st, sd->type, sd->size);
-                 if (!dst)
-                     return AVERROR(ENOMEM);
-                 memcpy(dst, sd->data, sd->size);
++                    dst = av_stream_new_side_data(ost->st, sd->type, sd->size);
+                     if (!dst)
+                         return AVERROR(ENOMEM);
+                     memcpy(dst, sd->data, sd->size);
 diff --git a/fftools/ffmpeg.h b/fftools/ffmpeg.h
-index d44b7a5..4dcfcff 100644
+index 828cb2a4ff..78267f298f 100644
 --- a/fftools/ffmpeg.h
 +++ b/fftools/ffmpeg.h
-@@ -230,6 +230,8 @@ typedef struct OptionsContext {
+@@ -229,6 +229,8 @@ typedef struct OptionsContext {
      int        nb_time_bases;
      SpecifierOpt *enc_time_bases;
      int        nb_enc_time_bases;
@@ -64,10 +64,10 @@ index d44b7a5..4dcfcff 100644
      AVRational frame_aspect_ratio;
  
 diff --git a/fftools/ffmpeg_opt.c b/fftools/ffmpeg_opt.c
-index d7a7eb0..4cd42e6 100644
+index 2eb4e1c973..70f2071473 100644
 --- a/fftools/ffmpeg_opt.c
 +++ b/fftools/ffmpeg_opt.c
-@@ -40,6 +40,8 @@
+@@ -41,6 +41,8 @@
  #include "libavutil/parseutils.h"
  #include "libavutil/pixdesc.h"
  #include "libavutil/pixfmt.h"
@@ -76,7 +76,15 @@ index d7a7eb0..4cd42e6 100644
  
  #define DEFAULT_PASS_LOGFILENAME_PREFIX "ffmpeg2pass"
  
-@@ -1598,12 +1600,158 @@ static void check_streamcopy_filters(OptionsContext *o, AVFormatContext *oc,
+@@ -92,6 +94,7 @@ static const char *opt_name_discard[]                   = {"discard", NULL};
+ static const char *opt_name_disposition[]               = {"disposition", NULL};
+ static const char *opt_name_time_bases[]                = {"time_base", NULL};
+ static const char *opt_name_enc_time_bases[]            = {"enc_time_base", NULL};
++static const char *opt_name_spherical_mappings[]        = {"spherical_mappings", NULL};
+ 
+ #define WARN_MULTIPLE_OPT_USAGE(name, type, so, st)\
+ {\
+@@ -1665,12 +1668,158 @@ static void check_streamcopy_filters(OptionsContext *o, AVFormatContext *oc,
      }
  }
  
@@ -197,7 +205,7 @@ index d7a7eb0..4cd42e6 100644
 +    }
 +
 +    if (ret >= 0) {
-+        ret = av_stream_add_side_data(st, AV_PKT_DATA_SPHERICAL, spherical_mapping, spherical_mapping_size);
++      ret = av_stream_add_side_data(st, AV_PKT_DATA_SPHERICAL, (uint8_t*)spherical_mapping, spherical_mapping_size);
 +
 +        if (ret < 0) {
 +            av_freep(&spherical_mapping);
@@ -212,7 +220,7 @@ index d7a7eb0..4cd42e6 100644
 +            return AVERROR(ENOMEM);
 +
 +          stereo3d->type = (enum AVStereo3DType)(ctx.stereo_mode);
-+          ret = av_stream_add_side_data(st, AV_PKT_DATA_STEREO3D, stereo3d, sizeof(*stereo3d));
++          ret = av_stream_add_side_data(st, AV_PKT_DATA_STEREO3D, (uint8_t*)stereo3d, sizeof(*stereo3d));
 +
 +          if (ret < 0) {
 +            av_freep(&stereo3d);
@@ -236,7 +244,7 @@ index d7a7eb0..4cd42e6 100644
  
      ost = new_output_stream(o, oc, AVMEDIA_TYPE_VIDEO, source_index);
      st  = ost->st;
-@@ -1630,6 +1778,12 @@ static OutputStream *new_video_stream(OptionsContext *o, AVFormatContext *oc, in
+@@ -1697,6 +1846,12 @@ static OutputStream *new_video_stream(OptionsContext *o, AVFormatContext *oc, in
  
      MATCH_PER_STREAM_OPT(filter_scripts, str, ost->filters_script, oc, st);
      MATCH_PER_STREAM_OPT(filters,        str, ost->filters,        oc, st);
@@ -249,7 +257,7 @@ index d7a7eb0..4cd42e6 100644
  
      if (!ost->stream_copy) {
          const char *p = NULL;
-@@ -3568,6 +3722,9 @@ const OptionDef options[] = {
+@@ -3664,6 +3819,9 @@ const OptionDef options[] = {
      { "autorotate",       HAS_ARG | OPT_BOOL | OPT_SPEC |
                            OPT_EXPERT | OPT_INPUT,                                { .off = OFFSET(autorotate) },
          "automatically insert correct rotate filters" },
@@ -260,5 +268,5 @@ index d7a7eb0..4cd42e6 100644
      /* audio options */
      { "aframes",        OPT_AUDIO | HAS_ARG  | OPT_PERFILE | OPT_OUTPUT,           { .func_arg = opt_audio_frames },
 -- 
-2.7.4
+2.25.1
 

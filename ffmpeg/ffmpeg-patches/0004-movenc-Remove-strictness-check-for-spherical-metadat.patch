@@ -1,25 +1,25 @@
-From 2006b49b22fead51cd30829cae9c4a1106e3084d Mon Sep 17 00:00:00 2001
-From: Aaron Colwell <acolwell@google.com>
-Date: Sat, 30 Sep 2017 14:40:34 -0700
-Subject: [PATCH] movenc: Remove strictness check for spherical metadata.
+From 7bfab5ca044799e8f1266aa4fb358763e8cd67ae Mon Sep 17 00:00:00 2001
+From: Aaron Colwell <300262+acolwell@users.noreply.github.com>
+Date: Sat, 18 Jul 2020 00:51:18 -0700
+Subject: [PATCH 4/6] movenc: Remove strictness check for spherical metadata.
 
 ---
  libavformat/movenc.c | 2 +-
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/libavformat/movenc.c b/libavformat/movenc.c
-index 62a38e9..a0ad236 100644
+index d827baf8a5..ec0d706aa6 100644
 --- a/libavformat/movenc.c
 +++ b/libavformat/movenc.c
-@@ -2053,7 +2053,7 @@ static int mov_write_video_tag(AVIOContext *pb, MOVMuxContext *mov, MOVTrack *tr
-             av_log(mov->fc, AV_LOG_WARNING, "Not writing 'colr' atom. Format is not MOV or MP4.\n");
+@@ -2182,7 +2182,7 @@ static int mov_write_video_tag(AVFormatContext *s, AVIOContext *pb, MOVMuxContex
+         mov_write_mdcv_tag(pb, track);
      }
  
 -    if (track->mode == MODE_MP4 && mov->fc->strict_std_compliance <= FF_COMPLIANCE_UNOFFICIAL) {
 +    if (track->mode == MODE_MP4) {
          AVStereo3D* stereo_3d = (AVStereo3D*) av_stream_get_side_data(track->st, AV_PKT_DATA_STEREO3D, NULL);
          AVSphericalMapping* spherical_mapping = (AVSphericalMapping*)av_stream_get_side_data(track->st, AV_PKT_DATA_SPHERICAL, NULL);
- 
+         AVDOVIDecoderConfigurationRecord *dovi = (AVDOVIDecoderConfigurationRecord *)
 -- 
-2.7.4
+2.25.1
 

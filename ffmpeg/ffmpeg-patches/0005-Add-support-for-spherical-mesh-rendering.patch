@@ -1,20 +1,20 @@
-From 77957dd811d8ed1fc526d0c19ec9c9bdb6d61d1b Mon Sep 17 00:00:00 2001
-From: Aaron Colwell <acolwell@google.com>
-Date: Mon, 30 Apr 2018 08:34:45 -0700
-Subject: [PATCH] Add support for spherical mesh rendering.
+From 3f2e9a8d135e10e2ba449cc49475f61fb469c4a9 Mon Sep 17 00:00:00 2001
+From: Aaron Colwell <300262+acolwell@users.noreply.github.com>
+Date: Sat, 18 Jul 2020 00:56:37 -0700
+Subject: [PATCH 5/6] Add support for spherical mesh rendering.
 
 ---
- libavdevice/opengl_enc.c         | 227 +++++++++++++++--
+ libavdevice/opengl_enc.c         | 227 ++++++++++++--
  libavdevice/opengl_enc_shaders.h |   4 +-
  libavformat/Makefile             |   1 +
- libavformat/spherical.c          | 516 +++++++++++++++++++++++++++++++++++++++
- libavformat/spherical.h          |  71 ++++++
+ libavformat/spherical.c          | 516 +++++++++++++++++++++++++++++++
+ libavformat/spherical.h          |  71 +++++
  5 files changed, 794 insertions(+), 25 deletions(-)
  create mode 100644 libavformat/spherical.c
  create mode 100644 libavformat/spherical.h
 
 diff --git a/libavdevice/opengl_enc.c b/libavdevice/opengl_enc.c
-index 54c7e61..92aa061 100644
+index 2bdb8da732..697e72d019 100644
 --- a/libavdevice/opengl_enc.c
 +++ b/libavdevice/opengl_enc.c
 @@ -22,6 +22,7 @@
@@ -25,7 +25,7 @@ index 54c7e61..92aa061 100644
  #include <stdio.h>
  #include <stdlib.h>
  #include <string.h>
-@@ -56,8 +57,11 @@
+@@ -55,8 +56,11 @@
  #include "libavutil/opt.h"
  #include "libavutil/avassert.h"
  #include "libavutil/avstring.h"
@@ -37,7 +37,7 @@ index 54c7e61..92aa061 100644
  #include "libavdevice/avdevice.h"
  #include "opengl_enc_shaders.h"
  
-@@ -106,6 +110,7 @@ typedef void   (APIENTRY *FF_PFNGLVERTEXATTRIBPOINTERPROC) (GLuint index, GLint
+@@ -105,6 +109,7 @@ typedef void   (APIENTRY *FF_PFNGLVERTEXATTRIBPOINTERPROC) (GLuint index, GLint
  typedef GLint  (APIENTRY *FF_PFNGLGETUNIFORMLOCATIONPROC) (GLuint program, const char *name);
  typedef void   (APIENTRY *FF_PFNGLUNIFORM1FPROC) (GLint location, GLfloat v0);
  typedef void   (APIENTRY *FF_PFNGLUNIFORM1IPROC) (GLint location, GLint v0);
@@ -45,7 +45,7 @@ index 54c7e61..92aa061 100644
  typedef void   (APIENTRY *FF_PFNGLUNIFORMMATRIX4FVPROC) (GLint location, GLsizei count, GLboolean transpose, const GLfloat *value);
  typedef GLuint (APIENTRY *FF_PFNGLCREATEPROGRAMPROC) (void);
  typedef void   (APIENTRY *FF_PFNGLDELETEPROGRAMPROC) (GLuint program);
-@@ -133,6 +138,7 @@ typedef struct FFOpenGLFunctions {
+@@ -132,6 +137,7 @@ typedef struct FFOpenGLFunctions {
      FF_PFNGLGETUNIFORMLOCATIONPROC glGetUniformLocation;           //Require GL_ARB_shader_objects
      FF_PFNGLUNIFORM1FPROC glUniform1f;                             //Require GL_ARB_shader_objects
      FF_PFNGLUNIFORM1IPROC glUniform1i;                             //Require GL_ARB_shader_objects
@@ -53,7 +53,7 @@ index 54c7e61..92aa061 100644
      FF_PFNGLUNIFORMMATRIX4FVPROC glUniformMatrix4fv;               //Require GL_ARB_shader_objects
      FF_PFNGLCREATEPROGRAMPROC glCreateProgram;                     //Require GL_ARB_shader_objects
      FF_PFNGLDELETEPROGRAMPROC glDeleteProgram;                     //Require GL_ARB_shader_objects
-@@ -200,8 +206,17 @@ typedef struct OpenGLContext {
+@@ -199,8 +205,17 @@ typedef struct OpenGLContext {
      GLuint index_buffer;               ///< Index buffer
      GLuint vertex_buffer;              ///< Vertex buffer
      OpenGLVertexInfo vertex[4];        ///< VBO
@@ -71,7 +71,7 @@ index 54c7e61..92aa061 100644
      GLint color_map_location;
      GLint chroma_div_w_location;
      GLint chroma_div_h_location;
-@@ -302,9 +317,14 @@ static av_cold void opengl_deinit_context(OpenGLContext *opengl)
+@@ -301,9 +316,14 @@ static av_cold void opengl_deinit_context(OpenGLContext *opengl)
          opengl->glprocs.glBindBuffer(FF_GL_ELEMENT_ARRAY_BUFFER, 0);
      }
      if (opengl->glprocs.glDeleteBuffers) {
@@ -86,7 +86,7 @@ index 54c7e61..92aa061 100644
  }
  
  static int opengl_resize(AVFormatContext *h, int width, int height)
-@@ -346,6 +366,7 @@ static int opengl_control_message(AVFormatContext *h, int type, void *data, size
+@@ -345,6 +365,7 @@ static int opengl_control_message(AVFormatContext *h, int type, void *data, size
  #if CONFIG_SDL2
  static int opengl_sdl_process_events(AVFormatContext *h)
  {
@@ -94,7 +94,7 @@ index 54c7e61..92aa061 100644
      OpenGLContext *opengl = h->priv_data;
      AVDeviceRect message;
      SDL_Event event;
-@@ -359,6 +380,24 @@ static int opengl_sdl_process_events(AVFormatContext *h)
+@@ -358,6 +379,24 @@ static int opengl_sdl_process_events(AVFormatContext *h)
              case SDLK_ESCAPE:
              case SDLK_q:
                  return AVERROR(EIO);
@@ -119,7 +119,7 @@ index 54c7e61..92aa061 100644
              }
              return 0;
          case SDL_WINDOWEVENT:
-@@ -427,6 +466,7 @@ static int av_cold opengl_sdl_load_procedures(OpenGLContext *opengl)
+@@ -426,6 +465,7 @@ static int av_cold opengl_sdl_load_procedures(OpenGLContext *opengl)
      LOAD_OPENGL_FUN(glGetUniformLocation, FF_PFNGLGETUNIFORMLOCATIONPROC)
      LOAD_OPENGL_FUN(glUniform1f, FF_PFNGLUNIFORM1FPROC)
      LOAD_OPENGL_FUN(glUniform1i, FF_PFNGLUNIFORM1IPROC)
@@ -127,7 +127,7 @@ index 54c7e61..92aa061 100644
      LOAD_OPENGL_FUN(glUniformMatrix4fv, FF_PFNGLUNIFORMMATRIX4FVPROC)
      LOAD_OPENGL_FUN(glCreateProgram, FF_PFNGLCREATEPROGRAMPROC)
      LOAD_OPENGL_FUN(glDeleteProgram, FF_PFNGLDELETEPROGRAMPROC)
-@@ -469,6 +509,7 @@ static int av_cold opengl_load_procedures(OpenGLContext *opengl)
+@@ -468,6 +508,7 @@ static int av_cold opengl_load_procedures(OpenGLContext *opengl)
      procs->glGetUniformLocation = glGetUniformLocation;
      procs->glUniform1f = glUniform1f;
      procs->glUniform1i = glUniform1i;
@@ -135,7 +135,7 @@ index 54c7e61..92aa061 100644
      procs->glUniformMatrix4fv = glUniformMatrix4fv;
      procs->glCreateProgram = glCreateProgram;
      procs->glDeleteProgram = glDeleteProgram;
-@@ -519,6 +560,7 @@ static int av_cold opengl_load_procedures(OpenGLContext *opengl)
+@@ -518,6 +559,7 @@ static int av_cold opengl_load_procedures(OpenGLContext *opengl)
      LOAD_OPENGL_FUN(glGetUniformLocation, FF_PFNGLGETUNIFORMLOCATIONPROC)
      LOAD_OPENGL_FUN(glUniform1f, FF_PFNGLUNIFORM1FPROC)
      LOAD_OPENGL_FUN(glUniform1i, FF_PFNGLUNIFORM1IPROC)
@@ -143,7 +143,7 @@ index 54c7e61..92aa061 100644
      LOAD_OPENGL_FUN(glUniformMatrix4fv, FF_PFNGLUNIFORMMATRIX4FVPROC)
      LOAD_OPENGL_FUN(glCreateProgram, FF_PFNGLCREATEPROGRAMPROC)
      LOAD_OPENGL_FUN(glDeleteProgram, FF_PFNGLDELETEPROGRAMPROC)
-@@ -549,6 +591,25 @@ static void opengl_make_identity(float matrix[16])
+@@ -548,6 +590,25 @@ static void opengl_make_identity(float matrix[16])
      matrix[0] = matrix[5] = matrix[10] = matrix[15] = 1.0f;
  }
  
@@ -169,7 +169,7 @@ index 54c7e61..92aa061 100644
  static void opengl_make_ortho(float matrix[16], float left, float right,
                                float bottom, float top, float nearZ, float farZ)
  {
-@@ -569,6 +630,18 @@ static void opengl_make_ortho(float matrix[16], float left, float right,
+@@ -568,6 +629,18 @@ static void opengl_make_ortho(float matrix[16], float left, float right,
      matrix[15] = 1.0f;
  }
  
@@ -185,10 +185,10 @@ index 54c7e61..92aa061 100644
 +    matrix[3 * 4 + 2] = -(2.0f * farZ * nearZ) / (farZ - nearZ);
 +}
 +
- static av_cold int opengl_read_limits(OpenGLContext *opengl)
+ static av_cold int opengl_read_limits(AVFormatContext *h)
  {
-     static const struct{
-@@ -685,6 +758,33 @@ static void opengl_compute_display_area(AVFormatContext *s)
+     OpenGLContext *opengl = h->priv_data;
+@@ -689,6 +762,33 @@ static void opengl_compute_display_area(AVFormatContext *s)
      }
  }
  
@@ -222,7 +222,7 @@ index 54c7e61..92aa061 100644
  static av_cold void opengl_get_texture_size(OpenGLContext *opengl, int in_width, int in_height,
                                              int *out_width, int *out_height)
  {
-@@ -817,6 +917,8 @@ static av_cold int opengl_compile_shaders(OpenGLContext *opengl, enum AVPixelFor
+@@ -821,6 +921,8 @@ static av_cold int opengl_compile_shaders(OpenGLContext *opengl, enum AVPixelFor
      opengl->texture_coords_attrib = opengl->glprocs.glGetAttribLocation(opengl->program, "a_textureCoords");
      opengl->projection_matrix_location = opengl->glprocs.glGetUniformLocation(opengl->program, "u_projectionMatrix");
      opengl->model_view_matrix_location = opengl->glprocs.glGetUniformLocation(opengl->program, "u_modelViewMatrix");
@@ -231,7 +231,7 @@ index 54c7e61..92aa061 100644
      opengl->color_map_location = opengl->glprocs.glGetUniformLocation(opengl->program, "u_colorMap");
      opengl->texture_location[0] = opengl->glprocs.glGetUniformLocation(opengl->program, "u_texture0");
      opengl->texture_location[1] = opengl->glprocs.glGetUniformLocation(opengl->program, "u_texture1");
-@@ -866,33 +968,66 @@ static av_cold int opengl_prepare_vertex(AVFormatContext *s)
+@@ -870,33 +972,66 @@ static av_cold int opengl_prepare_vertex(AVFormatContext *s)
          av_log(opengl, AV_LOG_WARNING, "Too big viewport requested, limited to %dx%d", opengl->window_width, opengl->window_height);
      }
      glViewport(0, 0, opengl->window_width, opengl->window_height);
@@ -320,7 +320,7 @@ index 54c7e61..92aa061 100644
      opengl->glprocs.glBindBuffer(FF_GL_ARRAY_BUFFER, 0);
      OPENGL_ERROR_CHECK(opengl);
      return 0;
-@@ -903,9 +1038,32 @@ static av_cold int opengl_prepare_vertex(AVFormatContext *s)
+@@ -907,9 +1042,32 @@ static av_cold int opengl_prepare_vertex(AVFormatContext *s)
  static int opengl_prepare(OpenGLContext *opengl)
  {
      int i;
@@ -353,7 +353,7 @@ index 54c7e61..92aa061 100644
      for (i = 0; i < 4; i++)
          if (opengl->texture_location[i] != -1) {
              opengl->glprocs.glActiveTexture(GL_TEXTURE0 + i);
-@@ -1224,13 +1382,34 @@ static int opengl_draw(AVFormatContext *h, void *input, int repaint, int is_pkt)
+@@ -1229,13 +1387,34 @@ static int opengl_draw(AVFormatContext *h, void *input, int repaint, int is_pkt)
          goto fail;
  
      opengl->glprocs.glBindBuffer(FF_GL_ARRAY_BUFFER, opengl->vertex_buffer);
@@ -391,7 +391,7 @@ index 54c7e61..92aa061 100644
      ret = AVERROR_EXTERNAL;
      OPENGL_ERROR_CHECK(opengl);
 diff --git a/libavdevice/opengl_enc_shaders.h b/libavdevice/opengl_enc_shaders.h
-index 67ee0ae..4305a98 100644
+index 67ee0ae7b4..4305a981a0 100644
 --- a/libavdevice/opengl_enc_shaders.h
 +++ b/libavdevice/opengl_enc_shaders.h
 @@ -26,6 +26,8 @@
@@ -413,7 +413,7 @@ index 67ee0ae..4305a98 100644
  
  /**
 diff --git a/libavformat/Makefile b/libavformat/Makefile
-index 3eeca50..fb896c2 100644
+index 0658fa3710..57cbbe83e0 100644
 --- a/libavformat/Makefile
 +++ b/libavformat/Makefile
 @@ -21,6 +21,7 @@ OBJS = allformats.o         \
@@ -426,7 +426,7 @@ index 3eeca50..fb896c2 100644
  
 diff --git a/libavformat/spherical.c b/libavformat/spherical.c
 new file mode 100644
-index 0000000..71c222c
+index 0000000000..71c222c2f4
 --- /dev/null
 +++ b/libavformat/spherical.c
 @@ -0,0 +1,516 @@
@@ -948,7 +948,7 @@ index 0000000..71c222c
 +}
 diff --git a/libavformat/spherical.h b/libavformat/spherical.h
 new file mode 100644
-index 0000000..1049277
+index 0000000000..1049277b75
 --- /dev/null
 +++ b/libavformat/spherical.h
 @@ -0,0 +1,71 @@
@@ -1024,5 +1024,5 @@ index 0000000..1049277
 +
 +#endif /* AVFORMAT_SPHERICAL_H */
 -- 
-2.7.4
+2.25.1
 

@@ -30,24 +30,24 @@ if [ ! -f opus-$OPUS_VERS.tar.gz ]; then
     wget http://downloads.xiph.org/releases/opus/opus-$OPUS_VERS.tar.gz
 fi
 
-# Fetch libvpx
-if [ ! -f libvpx-$VPX_VERS.tar.bz2 ]; then
-    wget http://storage.googleapis.com/downloads.webmproject.org/releases/webm/libvpx-$VPX_VERS.tar.bz2
+# Fetch rav1e
+if [ ! -f rav1e-$RAV1E_VERS.tar.gz ]; then
+    wget -O rav1e-$RAV1E_VERS.tar.gz https://github.com/xiph/rav1e/archive/v$RAV1E_VERS.tar.gz
 fi
 
-# Fetch x264
-if [ ! -f x264-snapshot-$X264_VERS-stable.tar.bz2 ]; then
-    wget ftp://ftp.videolan.org/pub/videolan/x264/snapshots/x264-snapshot-$X264_VERS-stable.tar.bz2
+# Fetch libvpx
+if [ ! -f libvpx-$VPX_VERS.tar.gz ]; then
+    wget -O libvpx-$VPX_VERS.tar.gz https://chromium.googlesource.com/webm/libvpx/+archive/v$VPX_VERS.tar.gz
 fi
 
 # Fetch faac
-if [ ! -f faac-$FAAC_VERS.tar.bz2 ]; then
-    wget http://downloads.sourceforge.net/faac/faac-$FAAC_VERS.tar.bz2
+if [ ! -f faac-$FAAC_VERS.tar.gz ]; then
+    wget -O faac-$FAAC_VERS.tar.gz https://github.com/knik0/faac/archive/$FAAC_VERS.tar.gz
 fi
 
 # Fetch lame
 if [ ! -f  lame-$LAME_VERS.tar.gz ]; then
-    wget -O lame-$LAME_VERS.tar.gz http://sourceforge.net/projects/lame/files/lame/3.99/lame-$LAME_VERS.tar.gz/download
+    wget -O lame-$LAME_VERS.tar.gz http://sourceforge.net/projects/lame/files/lame/$LAME_VERS/lame-$LAME_VERS.tar.gz/download
 fi
 
 # Fetch SDL2

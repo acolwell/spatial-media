@@ -1,7 +1,7 @@
-From b4d4ba1ad795351a78b3ecc659d41b1d4e0680a6 Mon Sep 17 00:00:00 2001
-From: Aaron Colwell <acolwell@google.com>
-Date: Sat, 30 Sep 2017 14:35:48 -0700
-Subject: [PATCH] Add mesh support for matroska.
+From 80a2c182c780647cf983e3199d6080f2886dd4fa Mon Sep 17 00:00:00 2001
+From: Aaron Colwell <300262+acolwell@users.noreply.github.com>
+Date: Sat, 18 Jul 2020 00:47:46 -0700
+Subject: [PATCH 3/6] Add mesh support for matroska.
 
 ---
  libavformat/matroskadec.c | 20 ++++++++++++++++----
@@ -9,19 +9,19 @@ Subject: [PATCH] Add mesh support for matroska.
  2 files changed, 22 insertions(+), 4 deletions(-)
 
 diff --git a/libavformat/matroskadec.c b/libavformat/matroskadec.c
-index 1ded431..0c7d2ba 100644
+index cff7f0cb54..efec22947c 100644
 --- a/libavformat/matroskadec.c
 +++ b/libavformat/matroskadec.c
-@@ -1936,7 +1936,7 @@ static int mkv_parse_video_color(AVStream *st, const MatroskaTrack *track) {
- }
- 
- static int mkv_parse_video_projection(AVStream *st, const MatroskaTrack *track) {
+@@ -2161,7 +2161,7 @@ static int mkv_parse_video_color(AVStream *st, const MatroskaTrack *track) {
+ static int mkv_parse_video_projection(AVStream *st, const MatroskaTrack *track,
+                                       void *logctx)
+ {
 -    AVSphericalMapping *spherical;
 +    AVSphericalMapping *spherical = NULL;
      enum AVSphericalProjection projection;
      size_t spherical_size;
      uint32_t l = 0, t = 0, r = 0, b = 0;
-@@ -2000,6 +2000,16 @@ static int mkv_parse_video_projection(AVStream *st, const MatroskaTrack *track)
+@@ -2225,6 +2225,16 @@ static int mkv_parse_video_projection(AVStream *st, const MatroskaTrack *track,
      case MATROSKA_VIDEO_PROJECTION_TYPE_RECTANGULAR:
          /* No Spherical metadata */
          return 0;
@@ -36,9 +36,9 @@ index 1ded431..0c7d2ba 100644
 +        spherical->mesh_size = track->video.projection.private.size;
 +        break;
      default:
-         av_log(NULL, AV_LOG_WARNING,
+         av_log(logctx, AV_LOG_WARNING,
                 "Unknown spherical metadata type %"PRIu64"\n",
-@@ -2007,9 +2017,11 @@ static int mkv_parse_video_projection(AVStream *st, const MatroskaTrack *track)
+@@ -2232,9 +2242,11 @@ static int mkv_parse_video_projection(AVStream *st, const MatroskaTrack *track,
          return 0;
      }
  
@@ -54,22 +54,22 @@ index 1ded431..0c7d2ba 100644
      spherical->projection = projection;
  
 diff --git a/libavformat/matroskaenc.c b/libavformat/matroskaenc.c
-index 5950b4d..80e6b74 100644
+index eaed02bc92..3297c9ec9e 100644
 --- a/libavformat/matroskaenc.c
 +++ b/libavformat/matroskaenc.c
-@@ -1001,6 +1001,12 @@ static int mkv_write_video_projection(AVFormatContext *s, AVIOContext *pb,
-         put_ebml_binary(dyn_cp, MATROSKA_ID_VIDEOPROJECTIONPRIVATE,
-                         private, avio_tell(&b));
+@@ -963,6 +963,12 @@ static void mkv_write_video_projection(AVFormatContext *s, AVIOContext *pb,
+         put_ebml_binary(pb, MATROSKA_ID_VIDEOPROJECTIONPRIVATE,
+                         private, 12);
          break;
 +    case AV_SPHERICAL_MESH:
-+        put_ebml_uint(dyn_cp, MATROSKA_ID_VIDEOPROJECTIONTYPE,
++        put_ebml_uint(pb, MATROSKA_ID_VIDEOPROJECTIONTYPE,
 +                      MATROSKA_VIDEO_PROJECTION_TYPE_MESH);
-+        put_ebml_binary(dyn_cp, MATROSKA_ID_VIDEOPROJECTIONPRIVATE,
++        put_ebml_binary(pb, MATROSKA_ID_VIDEOPROJECTIONPRIVATE,
 +                        spherical->mesh_data, spherical->mesh_size);
 +        break;
      default:
-         av_log(s, AV_LOG_WARNING, "Unknown projection type\n");
-         goto end;
+         av_assert0(0);
+     }
 -- 
-2.7.4
+2.25.1
 
